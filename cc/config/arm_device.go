@@ -155,6 +155,9 @@ var (
 			// better solution comes around. See Bug 27340895
 			"-D__ARM_FEATURE_LPAE=1",
 		},
+		"scorpion": []string{
+			"-mcpu=cortex-a8",
+		},
 	}
 
 	armClangCpuVariantCflags  = copyVariantFlags(armCpuVariantCflags)
@@ -182,6 +185,7 @@ func init() {
 		"cortex-a73",
 		"krait",
 		"kryo",
+		"scorpion",
 		"denver")
 
 	android.RegisterArchVariantFeatures(android.Arm, "armv7-a-neon", "neon")
