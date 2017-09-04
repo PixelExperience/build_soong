@@ -98,7 +98,7 @@ type variableProperties struct {
 		}
 
 		// include AOSP variables
-		*android.Product_variables
+		Aosp android_aosp.Product_variables
 	} `android:"arch_variant"`
 }
 
@@ -174,7 +174,7 @@ type productVariables struct {
 	DeviceKernelHeaders []string `json:",omitempty"`
 
 	// include AOSP variables
-	*android.ProductVariables
+	Aosp android_aosp.ProductVariables
 }
 
 func boolPtr(v bool) *bool {
