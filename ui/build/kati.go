@@ -71,7 +71,6 @@ func runKati(ctx Context, config Config) {
 		"--ninja_suffix=" + config.KatiSuffix(),
 		"--regen",
 		"--ignore_optional_include=" + filepath.Join(config.OutDir(), "%.P"),
-		"--detect_android_echo",
 		"--color_warnings",
 		"--gen_all_targets",
 		"--werror_find_emulator",
