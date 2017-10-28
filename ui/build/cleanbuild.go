@@ -98,7 +98,7 @@ func installClean(ctx Context, config Config, what int) {
 		hostOut("vts"),
 		productOut("*.img"),
 		productOut("*.zip"),
-                productOut("*.md5sum"),
+                productOut("*.md5"),
 		productOut("android-info.txt"),
 		productOut("kernel"),
 		productOut("data"),
