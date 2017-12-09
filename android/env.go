@@ -29,13 +29,16 @@ import (
 // a manifest regeneration.
 
 var originalEnv map[string]string
+var SdclangEnv map[string]string
 
 func init() {
 	originalEnv = make(map[string]string)
+	SdclangEnv = make(map[string]string)
 	for _, env := range os.Environ() {
 		idx := strings.IndexRune(env, '=')
 		if idx != -1 {
 			originalEnv[env[:idx]] = env[idx+1:]
+			SdclangEnv[env[:idx]] = env[idx+1:]
 		}
 	}
 	os.Clearenv()
