@@ -114,6 +114,7 @@ var (
 		"resolv",
 		"rt",
 		"util",
+		"supc++",
 	}, "-l")
 )
 
