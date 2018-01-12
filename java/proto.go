@@ -15,6 +15,8 @@
 package java
 
 import (
+	"strings"
+
 	"github.com/google/blueprint"
 	"github.com/google/blueprint/proptools"
 
@@ -29,17 +31,17 @@ var (
 	proto = pctx.AndroidStaticRule("protoc",
 		blueprint.RuleParams{
 			Command: `rm -rf $outDir && mkdir -p $outDir && ` +
-				`$protocCmd $protoOut=$protoOutFlags:$outDir $protoFlags $in && ` +
+				`$protocCmd $protoOut=$protoOutParams:$outDir $protoFlags $in && ` +
 				`${config.SoongZipCmd} -jar -o $out -C $outDir -D $outDir`,
 			CommandDeps: []string{
 				"$protocCmd",
 				"${config.SoongZipCmd}",
 			},
-		}, "protoFlags", "protoOut", "protoOutFlags", "outDir")
+		}, "protoFlags", "protoOut", "protoOutParams", "outDir")
 )
 
 func genProto(ctx android.ModuleContext, outputSrcJar android.WritablePath,
-	protoFiles android.Paths, protoFlags string, protoOut, protoOutFlags string) {
+	protoFiles android.Paths, protoFlags []string, protoOut, protoOutParams string) {
 
 	ctx.Build(pctx, android.BuildParams{
 		Rule:        proto,
@@ -47,10 +49,10 @@ func genProto(ctx android.ModuleContext, outputSrcJar android.WritablePath,
 		Output:      outputSrcJar,
 		Inputs:      protoFiles,
 		Args: map[string]string{
-			"outDir":        android.ProtoDir(ctx).String(),
-			"protoOut":      protoOut,
-			"protoOutFlags": protoOutFlags,
-			"protoFlags":    protoFlags,
+			"outDir":         android.ProtoDir(ctx).String(),
+			"protoOut":       protoOut,
+			"protoOutParams": protoOutParams,
+			"protoFlags":     strings.Join(protoFlags, " "),
 		},
 	})
 }
@@ -61,10 +63,6 @@ func protoDeps(ctx android.BottomUpMutatorContext, p *android.ProtoProperties) {
 		ctx.AddDependency(ctx.Module(), staticLibTag, "libprotobuf-java-micro")
 	case "nano":
 		ctx.AddDependency(ctx.Module(), staticLibTag, "libprotobuf-java-nano")
-	case "stream":
-		// TODO(ccross): add dependency on protoc-gen-java-stream binary
-		ctx.PropertyErrorf("proto.type", `"stream" not supported yet`)
-		// No library for stream protobufs
 	case "lite", "":
 		ctx.AddDependency(ctx.Module(), staticLibTag, "libprotobuf-java-lite")
 	case "full":
@@ -79,19 +77,32 @@ func protoDeps(ctx android.BottomUpMutatorContext, p *android.ProtoProperties) {
 	}
 }
 
-func protoFlags(ctx android.ModuleContext, p *android.ProtoProperties, flags javaBuilderFlags) javaBuilderFlags {
+func protoFlags(ctx android.ModuleContext, j *CompilerProperties, p *android.ProtoProperties,
+	flags javaBuilderFlags) javaBuilderFlags {
+
 	switch proptools.String(p.Proto.Type) {
 	case "micro":
-		flags.protoOutFlag = "--javamicro_out"
+		flags.protoOutTypeFlag = "--javamicro_out"
 	case "nano":
-		flags.protoOutFlag = "--javanano_out"
-	case "stream":
-		flags.protoOutFlag = "--javastream_out"
-	case "lite", "full", "":
-		flags.protoOutFlag = "--java_out"
+		flags.protoOutTypeFlag = "--javanano_out"
+	case "lite":
+		flags.protoOutTypeFlag = "--java_out"
+		flags.protoOutParams = "lite"
+	case "full", "":
+		flags.protoOutTypeFlag = "--java_out"
 	default:
 		ctx.PropertyErrorf("proto.type", "unknown proto type %q",
 			proptools.String(p.Proto.Type))
 	}
+
+	if len(j.Proto.Output_params) > 0 {
+		if flags.protoOutParams != "" {
+			flags.protoOutParams += ","
+		}
+		flags.protoOutParams += strings.Join(j.Proto.Output_params, ",")
+	}
+
+	flags.protoFlags = android.ProtoFlags(ctx, p)
+
 	return flags
 }

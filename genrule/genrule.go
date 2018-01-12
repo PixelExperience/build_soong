@@ -20,12 +20,11 @@ import (
 
 	"github.com/google/blueprint"
 	"github.com/google/blueprint/bootstrap"
+	"github.com/google/blueprint/proptools"
 
 	"android/soong/android"
 	"android/soong/shared"
 	"path/filepath"
-
-	"github.com/google/blueprint/proptools"
 )
 
 func init() {
@@ -72,10 +71,10 @@ type generatorProperties struct {
 	//
 	// All files used must be declared as inputs (to ensure proper up-to-date checks).
 	// Use "$(in)" directly in Cmd to ensure that all inputs used are declared.
-	Cmd string
+	Cmd *string
 
 	// Enable reading a file containing dependencies in gcc format after the command completes
-	Depfile bool
+	Depfile *bool
 
 	// name of the modules (if any) that produces the host executable.   Leave empty for
 	// prebuilts or scripts that do not need a module to build them.
@@ -132,21 +131,17 @@ func (g *Module) GeneratedHeaderDirs() android.Paths {
 
 func (g *Module) DepsMutator(ctx android.BottomUpMutatorContext) {
 	android.ExtractSourcesDeps(ctx, g.properties.Srcs)
+	android.ExtractSourcesDeps(ctx, g.properties.Tool_files)
 	if g, ok := ctx.Module().(*Module); ok {
 		if len(g.properties.Tools) > 0 {
 			ctx.AddFarVariationDependencies([]blueprint.Variation{
-				{"arch", ctx.AConfig().BuildOsVariant},
+				{"arch", ctx.Config().BuildOsVariant},
 			}, hostToolDepTag, g.properties.Tools...)
 		}
 	}
 }
 
 func (g *Module) GenerateAndroidBuildActions(ctx android.ModuleContext) {
-	if len(g.properties.Tools) == 0 && len(g.properties.Tool_files) == 0 {
-		ctx.ModuleErrorf("at least one `tools` or `tool_files` is required")
-		return
-	}
-
 	if len(g.properties.Export_include_dirs) > 0 {
 		for _, dir := range g.properties.Export_include_dirs {
 			g.exportedIncludeDirs = append(g.exportedIncludeDirs,
@@ -159,7 +154,7 @@ func (g *Module) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	tools := map[string]android.Path{}
 
 	if len(g.properties.Tools) > 0 {
-		ctx.VisitDirectDeps(func(module android.Module) {
+		ctx.VisitDirectDepsBlueprint(func(module blueprint.Module) {
 			switch ctx.OtherModuleDependencyTag(module) {
 			case android.SourceDepTag:
 				// Nothing to do
@@ -168,6 +163,14 @@ func (g *Module) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 				var path android.OptionalPath
 
 				if t, ok := module.(HostToolProvider); ok {
+					if !t.(android.Module).Enabled() {
+						if ctx.Config().AllowMissingDependencies() {
+							ctx.AddMissingDependencies([]string{tool})
+						} else {
+							ctx.ModuleErrorf("depends on disabled module %q", tool)
+						}
+						break
+					}
 					path = t.HostToolPath()
 				} else if t, ok := module.(bootstrap.GoBinaryTool); ok {
 					if s, err := filepath.Rel(android.PathForOutput(ctx).String(), t.InstallPath()); err == nil {
@@ -201,28 +204,32 @@ func (g *Module) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 		return
 	}
 
-	for _, tool := range g.properties.Tool_files {
-		toolPath := android.PathForModuleSrc(ctx, tool)
-		g.deps = append(g.deps, toolPath)
-		if _, exists := tools[tool]; !exists {
-			tools[tool] = toolPath
+	toolFiles := ctx.ExpandSources(g.properties.Tool_files, nil)
+	for _, tool := range toolFiles {
+		g.deps = append(g.deps, tool)
+		if _, exists := tools[tool.Rel()]; !exists {
+			tools[tool.Rel()] = tool
 		} else {
-			ctx.ModuleErrorf("multiple tools for %q, %q and %q", tool, tools[tool], toolPath.String())
+			ctx.ModuleErrorf("multiple tools for %q, %q and %q", tool, tools[tool.Rel()], tool.Rel())
 		}
 	}
 
 	referencedDepfile := false
 
 	srcFiles := ctx.ExpandSources(g.properties.Srcs, nil)
-	task := g.taskGenerator(ctx, g.properties.Cmd, srcFiles)
+	task := g.taskGenerator(ctx, String(g.properties.Cmd), srcFiles)
 
 	rawCommand, err := android.Expand(task.cmd, func(name string) (string, error) {
 		switch name {
 		case "location":
+			if len(g.properties.Tools) == 0 && len(toolFiles) == 0 {
+				return "", fmt.Errorf("at least one `tools` or `tool_files` is required if $(location) is used")
+			}
+
 			if len(g.properties.Tools) > 0 {
 				return tools[g.properties.Tools[0]].String(), nil
 			} else {
-				return tools[g.properties.Tool_files[0]].String(), nil
+				return tools[toolFiles[0].Rel()].String(), nil
 			}
 		case "in":
 			return "${in}", nil
@@ -230,7 +237,7 @@ func (g *Module) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 			return "__SBOX_OUT_FILES__", nil
 		case "depfile":
 			referencedDepfile = true
-			if !g.properties.Depfile {
+			if !Bool(g.properties.Depfile) {
 				return "", fmt.Errorf("$(depfile) used without depfile property")
 			}
 			return "__SBOX_DEPFILE__", nil
@@ -249,7 +256,7 @@ func (g *Module) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 		}
 	})
 
-	if g.properties.Depfile && !referencedDepfile {
+	if Bool(g.properties.Depfile) && !referencedDepfile {
 		ctx.PropertyErrorf("cmd", "specified depfile=true but did not include a reference to '${depfile}' in cmd")
 	}
 
@@ -265,19 +272,22 @@ func (g *Module) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	// recall that Sprintf replaces percent sign expressions, whereas dollar signs expressions remain as written,
 	// to be replaced later by ninja_strings.go
 	depfilePlaceholder := ""
-	if g.properties.Depfile {
+	if Bool(g.properties.Depfile) {
 		depfilePlaceholder = "$depfileArgs"
 	}
 
 	genDir := android.PathForModuleGen(ctx)
-	sandboxCommand := fmt.Sprintf("$sboxCmd --sandbox-path %s --output-root %s -c %q %s $allouts", sandboxPath, genDir, rawCommand, depfilePlaceholder)
+	// Escape the command for the shell
+	rawCommand = "'" + strings.Replace(rawCommand, "'", `'\''`, -1) + "'"
+	sandboxCommand := fmt.Sprintf("$sboxCmd --sandbox-path %s --output-root %s -c %s %s $allouts",
+		sandboxPath, genDir, rawCommand, depfilePlaceholder)
 
 	ruleParams := blueprint.RuleParams{
 		Command:     sandboxCommand,
 		CommandDeps: []string{"$sboxCmd"},
 	}
 	args := []string{"allouts"}
-	if g.properties.Depfile {
+	if Bool(g.properties.Depfile) {
 		ruleParams.Deps = blueprint.DepsGCC
 		args = append(args, "depfileArgs")
 	}
@@ -298,7 +308,7 @@ func (g *Module) generateSourceFile(ctx android.ModuleContext, task generateTask
 	}
 
 	var depFile android.ModuleGenPath
-	if g.properties.Depfile {
+	if Bool(g.properties.Depfile) {
 		depFile = android.PathForModuleGen(ctx, task.out[0].Rel()+".d")
 	}
 
@@ -313,7 +323,7 @@ func (g *Module) generateSourceFile(ctx android.ModuleContext, task generateTask
 			"allouts": strings.Join(task.out.Strings(), " "),
 		},
 	}
-	if g.properties.Depfile {
+	if Bool(g.properties.Depfile) {
 		params.Depfile = android.PathForModuleGen(ctx, task.out[0].Rel()+".d")
 		params.Args["depfileArgs"] = "--depfile-out " + depFile.String()
 	}
@@ -344,7 +354,7 @@ func NewGenSrcs() *Module {
 		outFiles := android.WritablePaths{}
 		genPath := android.PathForModuleGen(ctx).String()
 		for _, in := range srcFiles {
-			outFile := android.GenPathWithExt(ctx, "", in, properties.Output_extension)
+			outFile := android.GenPathWithExt(ctx, "", in, String(properties.Output_extension))
 			outFiles = append(outFiles, outFile)
 
 			// replace "out" with "__SBOX_OUT_DIR__/<the value of ${out}>"
@@ -391,7 +401,7 @@ func GenSrcsFactory() android.Module {
 
 type genSrcsProperties struct {
 	// extension that will be substituted for each output file
-	Output_extension string
+	Output_extension *string
 }
 
 func NewGenRule() *Module {
@@ -422,3 +432,6 @@ type genRuleProperties struct {
 	// names of the output files that will be generated
 	Out []string
 }
+
+var Bool = proptools.Bool
+var String = proptools.String

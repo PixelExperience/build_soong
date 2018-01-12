@@ -213,35 +213,6 @@ cc_library_shared {
 `,
 	},
 	{
-		desc: "*.logtags in LOCAL_SRC_FILES",
-		in: `
-include $(CLEAR_VARS)
-LOCAL_SRC_FILES := events.logtags
-LOCAL_SRC_FILES += a.c events2.logtags
-include $(BUILD_SHARED_LIBRARY)
-`,
-		expected: `
-cc_library_shared {
-    logtags: ["events.logtags"] + ["events2.logtags"],
-    srcs: ["a.c"],
-}
-`,
-	},
-	{
-		desc: "LOCAL_LOGTAGS_FILES and *.logtags in LOCAL_SRC_FILES",
-		in: `
-include $(CLEAR_VARS)
-LOCAL_LOGTAGS_FILES := events.logtags
-LOCAL_SRC_FILES := events2.logtags
-include $(BUILD_SHARED_LIBRARY)
-`,
-		expected: `
-cc_library_shared {
-    logtags: ["events.logtags"] + ["events2.logtags"],
-}
-`,
-	},
-	{
 		desc: "_<OS> suffixes",
 		in: `
 include $(CLEAR_VARS)
@@ -459,6 +430,13 @@ endif # b==false
 // ANDROIDMK TRANSLATION ERROR: endif from unsupported contitional
 // endif
 		`,
+	},
+	{
+		desc: "ignore all-makefiles-under",
+		in: `
+include $(call all-makefiles-under,$(LOCAL_PATH))
+`,
+		expected: ``,
 	},
 }
 

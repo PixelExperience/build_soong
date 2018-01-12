@@ -98,7 +98,7 @@ type stubDecorator struct {
 	properties libraryProperties
 
 	versionScriptPath android.ModuleGenPath
-	installPath       string
+	installPath       android.Path
 }
 
 // OMG GO
@@ -117,7 +117,7 @@ func normalizeNdkApiLevel(ctx android.BaseContext, apiLevel string,
 		return apiLevel, nil
 	}
 
-	minVersion := ctx.AConfig().MinSupportedSdkVersion()
+	minVersion := ctx.Config().MinSupportedSdkVersion()
 	firstArchVersions := map[android.ArchType]int{
 		android.Arm:    minVersion,
 		android.Arm64:  21,
@@ -188,7 +188,7 @@ func shouldUseVersionScript(stub *stubDecorator) (bool, error) {
 }
 
 func generateStubApiVariants(mctx android.BottomUpMutatorContext, c *stubDecorator) {
-	platformVersion := mctx.AConfig().PlatformSdkVersionInt()
+	platformVersion := mctx.Config().PlatformSdkVersionInt()
 
 	firstSupportedVersion, err := normalizeNdkApiLevel(mctx, String(c.properties.First_version),
 		mctx.Arch())
@@ -207,7 +207,7 @@ func generateStubApiVariants(mctx android.BottomUpMutatorContext, c *stubDecorat
 	for version := firstGenVersion; version <= platformVersion; version++ {
 		versionStrs = append(versionStrs, strconv.Itoa(version))
 	}
-	versionStrs = append(versionStrs, mctx.AConfig().PlatformVersionActiveCodenames()...)
+	versionStrs = append(versionStrs, mctx.Config().PlatformVersionActiveCodenames()...)
 	versionStrs = append(versionStrs, "current")
 
 	modules := mctx.CreateVariations(versionStrs...)
@@ -251,6 +251,8 @@ func addStubLibraryCompilerFlags(flags Flags) Flags {
 		"-Wno-incompatible-library-redeclaration",
 		"-Wno-builtin-requires-header",
 		"-Wno-invalid-noreturn",
+		"-Wall",
+		"-Werror",
 		// These libraries aren't actually used. Don't worry about unwinding
 		// (avoids the need to link an unwinder into a fake library).
 		"-fno-unwind-tables",
@@ -258,8 +260,8 @@ func addStubLibraryCompilerFlags(flags Flags) Flags {
 	return flags
 }
 
-func (stub *stubDecorator) compilerFlags(ctx ModuleContext, flags Flags) Flags {
-	flags = stub.baseCompiler.compilerFlags(ctx, flags)
+func (stub *stubDecorator) compilerFlags(ctx ModuleContext, flags Flags, deps PathDeps) Flags {
+	flags = stub.baseCompiler.compilerFlags(ctx, flags, deps)
 	return addStubLibraryCompilerFlags(flags)
 }
 
@@ -286,7 +288,7 @@ func compileStubLibrary(ctx ModuleContext, flags Flags, symbolFile, apiLevel, vn
 
 	subdir := ""
 	srcs := []android.Path{stubSrcPath}
-	return compileObjs(ctx, flagsToBuilderFlags(flags), subdir, srcs, nil), versionScriptPath
+	return compileObjs(ctx, flagsToBuilderFlags(flags), subdir, srcs, nil, nil), versionScriptPath
 }
 
 func (c *stubDecorator) compile(ctx ModuleContext, flags Flags, deps PathDeps) Objects {
@@ -342,7 +344,7 @@ func (stub *stubDecorator) install(ctx ModuleContext, path android.Path) {
 
 	installDir := getNdkInstallBase(ctx).Join(ctx, fmt.Sprintf(
 		"platforms/android-%s/arch-%s/usr/%s", apiLevel, arch, libDir))
-	stub.installPath = ctx.InstallFile(installDir, path.Base(), path).String()
+	stub.installPath = ctx.InstallFile(installDir, path.Base(), path)
 }
 
 func newStubLibrary() *Module {

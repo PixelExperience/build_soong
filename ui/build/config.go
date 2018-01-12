@@ -34,11 +34,12 @@ type configImpl struct {
 	environ   *Environment
 
 	// From the arguments
-	parallel  int
-	keepGoing int
-	verbose   bool
-	dist      bool
-	skipMake  bool
+	parallel   int
+	keepGoing  int
+	verbose    bool
+	checkbuild bool
+	dist       bool
+	skipMake   bool
 
 	// From the product config
 	katiArgs     []string
@@ -145,14 +146,16 @@ func NewConfig(ctx Context, args ...string) Config {
 	}
 
 	// Configure Java-related variables, including adding it to $PATH
+	java8Home := filepath.Join("prebuilts/jdk/jdk8", ret.HostPrebuiltTag())
+	java9Home := filepath.Join("prebuilts/jdk/jdk9", ret.HostPrebuiltTag())
 	javaHome := func() string {
 		if override, ok := ret.environ.Get("OVERRIDE_ANDROID_JAVA_HOME"); ok {
 			return override
 		}
-		if v, ok := ret.environ.Get("EXPERIMENTAL_USE_OPENJDK9"); ok && v != "" {
-			return filepath.Join("prebuilts/jdk/jdk9", ret.HostPrebuiltTag())
+		if v, ok := ret.environ.Get("EXPERIMENTAL_USE_OPENJDK9"); ok && v != "" && v != "false" {
+			return java9Home
 		}
-		return filepath.Join("prebuilts/jdk/jdk8", ret.HostPrebuiltTag())
+		return java8Home
 	}()
 	absJavaHome := absPath(ctx, javaHome)
 
@@ -163,6 +166,8 @@ func NewConfig(ctx Context, args ...string) Config {
 	ret.environ.Unset("OVERRIDE_ANDROID_JAVA_HOME")
 	ret.environ.Set("JAVA_HOME", absJavaHome)
 	ret.environ.Set("ANDROID_JAVA_HOME", javaHome)
+	ret.environ.Set("ANDROID_JAVA8_HOME", java8Home)
+	ret.environ.Set("ANDROID_JAVA9_HOME", java9Home)
 	ret.environ.Set("PATH", strings.Join(newPath, string(filepath.ListSeparator)))
 
 	return Config{ret}
@@ -206,6 +211,8 @@ func (c *configImpl) parseArgs(ctx Context, args []string) {
 		} else {
 			if arg == "dist" {
 				c.dist = true
+			} else if arg == "checkbuild" {
+				c.checkbuild = true
 			}
 			c.arguments = append(c.arguments, arg)
 		}
@@ -311,6 +318,12 @@ func (c *configImpl) KatiSuffix() string {
 		return c.katiSuffix
 	}
 	panic("SetKatiSuffix has not been called")
+}
+
+// Checkbuild returns true if "checkbuild" was one of the build goals, which means that the
+// user is interested in additional checks at the expense of build time.
+func (c *configImpl) Checkbuild() bool {
+	return c.checkbuild
 }
 
 func (c *configImpl) Dist() bool {

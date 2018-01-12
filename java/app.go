@@ -25,6 +25,11 @@ import (
 	"android/soong/android"
 )
 
+func init() {
+	android.RegisterPreSingletonType("overlay", OverlaySingletonFactory)
+	android.RegisterModuleType("android_app", AndroidAppFactory)
+}
+
 // AAR prebuilts
 // AndroidManifest.xml merging
 // package splits
@@ -32,14 +37,14 @@ import (
 type androidAppProperties struct {
 	// path to a certificate, or the name of a certificate in the default
 	// certificate directory, or blank to use the default product certificate
-	Certificate string
+	Certificate *string
 
 	// paths to extra certificates to sign the apk with
 	Additional_certificates []string
 
 	// If set, create package-export.apk, which other packages can
 	// use to get PRODUCT-agnostic resource data like IDs and type definitions.
-	Export_package_resources bool
+	Export_package_resources *bool
 
 	// flags passed to aapt when creating the apk
 	Aaptflags []string
@@ -54,6 +59,13 @@ type androidAppProperties struct {
 	// list of directories relative to the Blueprints file containing
 	// Android resources
 	Resource_dirs []string
+
+	Instrumentation_for *string
+
+	// Specifies that this app should be installed to the priv-app directory,
+	// where the system will grant it additional privileges not available to
+	// normal apps.
+	Privileged *bool
 }
 
 type AndroidApp struct {
@@ -61,16 +73,23 @@ type AndroidApp struct {
 
 	appProperties androidAppProperties
 
-	aaptJavaFileList android.Path
-	exportPackage    android.Path
+	aaptSrcJar    android.Path
+	exportPackage android.Path
+	rroDirs       android.Paths
+	manifestPath  android.Path
+	certificate   certificate
+}
+
+type certificate struct {
+	pem, key android.Path
 }
 
 func (a *AndroidApp) DepsMutator(ctx android.BottomUpMutatorContext) {
 	a.Module.deps(ctx)
 
-	if !proptools.Bool(a.properties.No_standard_libs) {
-		switch a.deviceProperties.Sdk_version { // TODO: Res_sdk_version?
-		case "current", "system_current", "":
+	if !Bool(a.properties.No_framework_libs) && !Bool(a.properties.No_standard_libs) {
+		switch String(a.deviceProperties.Sdk_version) { // TODO: Res_sdk_version?
+		case "current", "system_current", "test_current", "":
 			ctx.AddDependency(ctx.Module(), frameworkResTag, "framework-res")
 		default:
 			// We'll already have a dependency on an sdk prebuilt android.jar
@@ -79,38 +98,29 @@ func (a *AndroidApp) DepsMutator(ctx android.BottomUpMutatorContext) {
 }
 
 func (a *AndroidApp) GenerateAndroidBuildActions(ctx android.ModuleContext) {
-	aaptFlags, aaptDeps, hasResources := a.aaptFlags(ctx)
+	linkFlags, linkDeps, resDirs, overlayDirs, rroDirs, manifestPath := a.aapt2Flags(ctx)
 
-	if hasResources {
-		// First generate R.java so we can build the .class files
-		aaptRJavaFlags := append([]string(nil), aaptFlags...)
+	packageRes := android.PathForModuleOut(ctx, "package-res.apk")
+	srcJar := android.PathForModuleGen(ctx, "R.jar")
+	proguardOptionsFile := android.PathForModuleGen(ctx, "proguard.options")
 
-		publicResourcesFile, proguardOptionsFile, aaptJavaFileList :=
-			CreateResourceJavaFiles(ctx, aaptRJavaFlags, aaptDeps)
-		a.aaptJavaFileList = aaptJavaFileList
-		// TODO(ccross):  export aapt generated java files as a src jar
-
-		if a.appProperties.Export_package_resources {
-			aaptPackageFlags := append([]string(nil), aaptFlags...)
-			var hasProduct bool
-			for _, f := range aaptPackageFlags {
-				if strings.HasPrefix(f, "--product") {
-					hasProduct = true
-					break
-				}
-			}
-
-			if !hasProduct {
-				aaptPackageFlags = append(aaptPackageFlags,
-					"--product "+ctx.AConfig().ProductAAPTCharacteristics())
-			}
-			a.exportPackage = CreateExportPackage(ctx, aaptPackageFlags, aaptDeps)
-			ctx.CheckbuildFile(a.exportPackage)
-		}
-		ctx.CheckbuildFile(publicResourcesFile)
-		ctx.CheckbuildFile(proguardOptionsFile)
-		ctx.CheckbuildFile(aaptJavaFileList)
+	var compiledRes, compiledOverlay android.Paths
+	for _, dir := range resDirs {
+		compiledRes = append(compiledRes, aapt2Compile(ctx, dir.dir, dir.files).Paths()...)
 	}
+	for _, dir := range overlayDirs {
+		compiledOverlay = append(compiledOverlay, aapt2Compile(ctx, dir.dir, dir.files).Paths()...)
+	}
+
+	aapt2Link(ctx, packageRes, srcJar, proguardOptionsFile,
+		linkFlags, linkDeps, compiledRes, compiledOverlay)
+
+	a.exportPackage = packageRes
+	a.aaptSrcJar = srcJar
+
+	ctx.CheckbuildFile(proguardOptionsFile)
+	ctx.CheckbuildFile(a.exportPackage)
+	ctx.CheckbuildFile(a.aaptSrcJar)
 
 	// apps manifests are handled by aapt, don't let Module see them
 	a.properties.Manifest = nil
@@ -119,38 +129,56 @@ func (a *AndroidApp) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	//	a.properties.Proguard.Enabled = true
 	//}
 
-	a.Module.compile(ctx)
+	if String(a.appProperties.Instrumentation_for) == "" {
+		a.properties.Instrument = true
+	}
 
-	aaptPackageFlags := append([]string(nil), aaptFlags...)
-	var hasProduct bool
-	for _, f := range aaptPackageFlags {
-		if strings.HasPrefix(f, "--product") {
-			hasProduct = true
-			break
+	if ctx.ModuleName() != "framework-res" {
+		a.Module.compile(ctx, a.aaptSrcJar)
+	}
+
+	c := String(a.appProperties.Certificate)
+	switch {
+	case c == "":
+		pem, key := ctx.Config().DefaultAppCertificate(ctx)
+		a.certificate = certificate{pem, key}
+	case strings.ContainsRune(c, '/'):
+		a.certificate = certificate{
+			android.PathForSource(ctx, c+".x509.pem"),
+			android.PathForSource(ctx, c+".pk8"),
+		}
+	default:
+		defaultDir := ctx.Config().DefaultAppCertificateDir(ctx)
+		a.certificate = certificate{
+			defaultDir.Join(ctx, c+".x509.pem"),
+			defaultDir.Join(ctx, c+".pk8"),
 		}
 	}
 
-	if !hasProduct {
-		aaptPackageFlags = append(aaptPackageFlags,
-			"--product "+ctx.AConfig().ProductAAPTCharacteristics())
-	}
-
-	certificate := a.appProperties.Certificate
-	if certificate == "" {
-		certificate = ctx.AConfig().DefaultAppCertificate(ctx).String()
-	} else if dir, _ := filepath.Split(certificate); dir == "" {
-		certificate = filepath.Join(ctx.AConfig().DefaultAppCertificateDir(ctx).String(), certificate)
-	} else {
-		certificate = filepath.Join(android.PathForSource(ctx).String(), certificate)
-	}
-
-	certificates := []string{certificate}
+	certificates := []certificate{a.certificate}
 	for _, c := range a.appProperties.Additional_certificates {
-		certificates = append(certificates, filepath.Join(android.PathForSource(ctx).String(), c))
+		certificates = append(certificates, certificate{
+			android.PathForSource(ctx, c+".x509.pem"),
+			android.PathForSource(ctx, c+".pk8"),
+		})
 	}
 
-	a.outputFile = CreateAppPackage(ctx, aaptPackageFlags, a.outputFile, certificates)
-	ctx.InstallFile(android.PathForModuleInstall(ctx, "app"), ctx.ModuleName()+".apk", a.outputFile)
+	packageFile := android.PathForModuleOut(ctx, "package.apk")
+
+	CreateAppPackage(ctx, packageFile, a.exportPackage, a.outputFile, certificates)
+
+	a.outputFile = packageFile
+	a.rroDirs = rroDirs
+	a.manifestPath = manifestPath
+
+	if ctx.ModuleName() == "framework-res" {
+		// framework-res.apk is installed as system/framework/framework-res.apk
+		ctx.InstallFile(android.PathForModuleInstall(ctx, "framework"), ctx.ModuleName()+".apk", a.outputFile)
+	} else if Bool(a.appProperties.Privileged) {
+		ctx.InstallFile(android.PathForModuleInstall(ctx, "priv-app"), ctx.ModuleName()+".apk", a.outputFile)
+	} else {
+		ctx.InstallFile(android.PathForModuleInstall(ctx, "app"), ctx.ModuleName()+".apk", a.outputFile)
+	}
 }
 
 var aaptIgnoreFilenames = []string{
@@ -165,57 +193,57 @@ var aaptIgnoreFilenames = []string{
 	"*~",
 }
 
-func (a *AndroidApp) aaptFlags(ctx android.ModuleContext) ([]string, android.Paths, bool) {
-	aaptFlags := a.appProperties.Aaptflags
+type globbedResourceDir struct {
+	dir   android.Path
+	files android.Paths
+}
+
+func (a *AndroidApp) aapt2Flags(ctx android.ModuleContext) (flags []string, deps android.Paths,
+	resDirs, overlayDirs []globbedResourceDir, rroDirs android.Paths, manifestPath android.Path) {
+
 	hasVersionCode := false
 	hasVersionName := false
-	for _, f := range aaptFlags {
+	hasProduct := false
+	for _, f := range a.appProperties.Aaptflags {
 		if strings.HasPrefix(f, "--version-code") {
 			hasVersionCode = true
 		} else if strings.HasPrefix(f, "--version-name") {
 			hasVersionName = true
+		} else if strings.HasPrefix(f, "--product") {
+			hasProduct = true
 		}
 	}
 
-	if true /* is not a test */ {
-		aaptFlags = append(aaptFlags, "-z")
-	}
+	var linkFlags []string
 
+	// Flags specified in Android.bp
+	linkFlags = append(linkFlags, a.appProperties.Aaptflags...)
+
+	linkFlags = append(linkFlags, "--no-static-lib-packages")
+
+	// Find implicit or explicit asset and resource dirs
 	assetDirs := android.PathsWithOptionalDefaultForModuleSrc(ctx, a.appProperties.Asset_dirs, "assets")
 	resourceDirs := android.PathsWithOptionalDefaultForModuleSrc(ctx, a.appProperties.Resource_dirs, "res")
 
-	var overlayResourceDirs android.Paths
-	// For every resource directory, check if there is an overlay directory with the same path.
-	// If found, it will be prepended to the list of resource directories.
-	for _, overlayDir := range ctx.AConfig().ResourceOverlays() {
-		for _, resourceDir := range resourceDirs {
-			overlay := overlayDir.OverlayPath(ctx, resourceDir)
-			if overlay.Valid() {
-				overlayResourceDirs = append(overlayResourceDirs, overlay.Path())
-			}
-		}
+	var linkDeps android.Paths
+
+	// Glob directories into lists of paths
+	for _, dir := range resourceDirs {
+		resDirs = append(resDirs, globbedResourceDir{
+			dir:   dir,
+			files: resourceGlob(ctx, dir),
+		})
+		resOverlayDirs, resRRODirs := overlayResourceGlob(ctx, dir)
+		overlayDirs = append(overlayDirs, resOverlayDirs...)
+		rroDirs = append(rroDirs, resRRODirs...)
 	}
 
-	if len(overlayResourceDirs) > 0 {
-		resourceDirs = append(overlayResourceDirs, resourceDirs...)
+	var assetFiles android.Paths
+	for _, dir := range assetDirs {
+		assetFiles = append(assetFiles, resourceGlob(ctx, dir)...)
 	}
 
-	// aapt needs to rerun if any files are added or modified in the assets or resource directories,
-	// use glob to create a filelist.
-	var aaptDeps android.Paths
-	var hasResources bool
-	for _, d := range resourceDirs {
-		newDeps := ctx.Glob(filepath.Join(d.String(), "**/*"), aaptIgnoreFilenames)
-		aaptDeps = append(aaptDeps, newDeps...)
-		if len(newDeps) > 0 {
-			hasResources = true
-		}
-	}
-	for _, d := range assetDirs {
-		newDeps := ctx.Glob(filepath.Join(d.String(), "**/*"), aaptIgnoreFilenames)
-		aaptDeps = append(aaptDeps, newDeps...)
-	}
-
+	// App manifest file
 	var manifestFile string
 	if a.properties.Manifest == nil {
 		manifestFile = "AndroidManifest.xml"
@@ -223,51 +251,74 @@ func (a *AndroidApp) aaptFlags(ctx android.ModuleContext) ([]string, android.Pat
 		manifestFile = *a.properties.Manifest
 	}
 
-	manifestPath := android.PathForModuleSrc(ctx, manifestFile)
-	aaptDeps = append(aaptDeps, manifestPath)
+	manifestPath = android.PathForModuleSrc(ctx, manifestFile)
+	linkFlags = append(linkFlags, "--manifest "+manifestPath.String())
+	linkDeps = append(linkDeps, manifestPath)
 
-	aaptFlags = append(aaptFlags, "-M "+manifestPath.String())
-	aaptFlags = append(aaptFlags, android.JoinWithPrefix(assetDirs.Strings(), "-A "))
-	aaptFlags = append(aaptFlags, android.JoinWithPrefix(resourceDirs.Strings(), "-S "))
+	linkFlags = append(linkFlags, android.JoinWithPrefix(assetDirs.Strings(), "-A "))
+	linkDeps = append(linkDeps, assetFiles...)
 
+	// Include dirs
 	ctx.VisitDirectDeps(func(module android.Module) {
 		var depFiles android.Paths
 		if javaDep, ok := module.(Dependency); ok {
+			// TODO: shared android libraries
 			if ctx.OtherModuleName(module) == "framework-res" {
 				depFiles = android.Paths{javaDep.(*AndroidApp).exportPackage}
 			}
 		}
 
 		for _, dep := range depFiles {
-			aaptFlags = append(aaptFlags, "-I "+dep.String())
+			linkFlags = append(linkFlags, "-I "+dep.String())
 		}
-		aaptDeps = append(aaptDeps, depFiles...)
+		linkDeps = append(linkDeps, depFiles...)
 	})
 
-	sdkVersion := a.deviceProperties.Sdk_version
-	if sdkVersion == "" {
-		sdkVersion = ctx.AConfig().PlatformSdkVersion()
+	// SDK version flags
+	sdkVersion := String(a.deviceProperties.Sdk_version)
+	switch sdkVersion {
+	case "", "current", "system_current", "test_current":
+		sdkVersion = proptools.NinjaEscape([]string{ctx.Config().AppsDefaultVersionName()})[0]
 	}
 
-	aaptFlags = append(aaptFlags, "--min-sdk-version "+sdkVersion)
-	aaptFlags = append(aaptFlags, "--target-sdk-version "+sdkVersion)
+	linkFlags = append(linkFlags, "--min-sdk-version "+sdkVersion)
+	linkFlags = append(linkFlags, "--target-sdk-version "+sdkVersion)
 
+	// Product characteristics
+	if !hasProduct && len(ctx.Config().ProductAAPTCharacteristics()) > 0 {
+		linkFlags = append(linkFlags, "--product", ctx.Config().ProductAAPTCharacteristics())
+	}
+
+	// Product AAPT config
+	for _, aaptConfig := range ctx.Config().ProductAAPTConfig() {
+		linkFlags = append(linkFlags, "-c", aaptConfig)
+	}
+
+	// Product AAPT preferred config
+	if len(ctx.Config().ProductAAPTPreferredConfig()) > 0 {
+		linkFlags = append(linkFlags, "--preferred-density", ctx.Config().ProductAAPTPreferredConfig())
+	}
+
+	// Version code
 	if !hasVersionCode {
-		aaptFlags = append(aaptFlags, "--version-code "+ctx.AConfig().PlatformSdkVersion())
+		linkFlags = append(linkFlags, "--version-code", ctx.Config().PlatformSdkVersion())
 	}
 
 	if !hasVersionName {
-		aaptFlags = append(aaptFlags,
-			"--version-name "+ctx.AConfig().PlatformVersion()+"-"+ctx.AConfig().BuildNumber())
+		versionName := proptools.NinjaEscape([]string{ctx.Config().AppsDefaultVersionName()})[0]
+		linkFlags = append(linkFlags, "--version-name ", versionName)
+	}
+
+	if String(a.appProperties.Instrumentation_for) != "" {
+		linkFlags = append(linkFlags,
+			"--rename-instrumentation-target-package",
+			String(a.appProperties.Instrumentation_for))
 	}
 
 	// TODO: LOCAL_PACKAGE_OVERRIDES
 	//    $(addprefix --rename-manifest-package , $(PRIVATE_MANIFEST_PACKAGE_NAME)) \
 
-	// TODO: LOCAL_INSTRUMENTATION_FOR
-	//    $(addprefix --rename-instrumentation-target-package , $(PRIVATE_MANIFEST_INSTRUMENTATION_FOR))
-
-	return aaptFlags, aaptDeps, hasResources
+	return linkFlags, linkDeps, resDirs, overlayDirs, rroDirs, manifestPath
 }
 
 func AndroidAppFactory() android.Module {
@@ -280,4 +331,115 @@ func AndroidAppFactory() android.Module {
 
 	android.InitAndroidArchModule(module, android.DeviceSupported, android.MultilibCommon)
 	return module
+}
+
+func resourceGlob(ctx android.ModuleContext, dir android.Path) android.Paths {
+	var ret android.Paths
+	files := ctx.Glob(filepath.Join(dir.String(), "**/*"), aaptIgnoreFilenames)
+	for _, f := range files {
+		if isDir, err := ctx.Fs().IsDir(f.String()); err != nil {
+			ctx.ModuleErrorf("error in IsDir(%s): %s", f.String(), err.Error())
+			return nil
+		} else if !isDir {
+			ret = append(ret, f)
+		}
+	}
+	return ret
+}
+
+type overlayGlobResult struct {
+	dir   string
+	paths android.DirectorySortedPaths
+
+	// Set to true of the product has selected that values in this overlay should not be moved to
+	// Runtime Resource Overlay (RRO) packages.
+	excludeFromRRO bool
+}
+
+const overlayDataKey = "overlayDataKey"
+
+func overlayResourceGlob(ctx android.ModuleContext, dir android.Path) (res []globbedResourceDir,
+	rroDirs android.Paths) {
+
+	overlayData := ctx.Config().Get(overlayDataKey).([]overlayGlobResult)
+
+	// Runtime resource overlays (RRO) may be turned on by the product config for some modules
+	rroEnabled := false
+	enforceRROTargets := ctx.Config().ProductVariables.EnforceRROTargets
+	if enforceRROTargets != nil {
+		if len(*enforceRROTargets) == 1 && (*enforceRROTargets)[0] == "*" {
+			rroEnabled = true
+		} else if inList(ctx.ModuleName(), *enforceRROTargets) {
+			rroEnabled = true
+		}
+	}
+
+	for _, data := range overlayData {
+		files := data.paths.PathsInDirectory(filepath.Join(data.dir, dir.String()))
+		if len(files) > 0 {
+			overlayModuleDir := android.PathForSource(ctx, data.dir, dir.String())
+			// If enforce RRO is enabled for this module and this overlay is not in the
+			// exclusion list, ignore the overlay.  The list of ignored overlays will be
+			// passed to Make to be turned into an RRO package.
+			if rroEnabled && !data.excludeFromRRO {
+				rroDirs = append(rroDirs, overlayModuleDir)
+			} else {
+				res = append(res, globbedResourceDir{
+					dir:   overlayModuleDir,
+					files: files,
+				})
+			}
+		}
+	}
+
+	return res, rroDirs
+}
+
+func OverlaySingletonFactory() android.Singleton {
+	return overlaySingleton{}
+}
+
+type overlaySingleton struct{}
+
+func (overlaySingleton) GenerateBuildActions(ctx android.SingletonContext) {
+
+	// Specific overlays may be excluded from Runtime Resource Overlays by the product config
+	var rroExcludedOverlays []string
+	if ctx.Config().ProductVariables.EnforceRROExcludedOverlays != nil {
+		rroExcludedOverlays = *ctx.Config().ProductVariables.EnforceRROExcludedOverlays
+	}
+
+	var overlayData []overlayGlobResult
+	for _, overlay := range ctx.Config().ResourceOverlays() {
+		var result overlayGlobResult
+		result.dir = overlay
+
+		// Mark overlays that will not have Runtime Resource Overlays enforced on them
+		for _, exclude := range rroExcludedOverlays {
+			if strings.HasPrefix(overlay, exclude) {
+				result.excludeFromRRO = true
+			}
+		}
+
+		files, err := ctx.GlobWithDeps(filepath.Join(overlay, "**/*"), aaptIgnoreFilenames)
+		if err != nil {
+			ctx.Errorf("failed to glob resource dir %q: %s", overlay, err.Error())
+			continue
+		}
+		var paths android.Paths
+		for _, f := range files {
+			if isDir, err := ctx.Fs().IsDir(f); err != nil {
+				ctx.Errorf("error in IsDir(%s): %s", f, err.Error())
+				return
+			} else if !isDir {
+				paths = append(paths, android.PathForSource(ctx, f))
+			}
+		}
+		result.paths = android.PathsToDirectorySortedPaths(paths)
+		overlayData = append(overlayData, result)
+	}
+
+	ctx.Config().Once(overlayDataKey, func() interface{} {
+		return overlayData
+	})
 }

@@ -65,7 +65,7 @@ var (
 			// maximum number of input files, especially on darwin.
 			Command: `rm -rf "$outDir" && mkdir -p "$outDir" && ` +
 				`${config.KotlincCmd} $classpath $kotlincFlags ` +
-				`-jvm-target $javaVersion -d $outDir $in && ` +
+				`-jvm-target $kotlinJvmTarget -d $outDir $in && ` +
 				`${config.SoongZipCmd} -jar -o $out -C $outDir -D $outDir`,
 			CommandDeps: []string{
 				"${config.KotlincCmd}",
@@ -73,7 +73,7 @@ var (
 				"${config.SoongZipCmd}",
 			},
 		},
-		"kotlincFlags", "classpath", "outDir", "javaVersion")
+		"kotlincFlags", "classpath", "outDir", "kotlinJvmTarget")
 
 	errorprone = pctx.AndroidStaticRule("errorprone",
 		blueprint.RuleParams{
@@ -161,6 +161,20 @@ var (
 		},
 		"outDir", "dxFlags")
 
+	d8 = pctx.AndroidStaticRule("d8",
+		blueprint.RuleParams{
+			Command: `rm -rf "$outDir" && mkdir -p "$outDir" && ` +
+				`${config.D8Cmd} --output $outDir $dxFlags $in && ` +
+				`${config.SoongZipCmd} -o $outDir/classes.dex.jar -C $outDir -D $outDir && ` +
+				`${config.MergeZipsCmd} -D -stripFile "*.class" $out $outDir/classes.dex.jar $in`,
+			CommandDeps: []string{
+				"${config.DxCmd}",
+				"${config.SoongZipCmd}",
+				"${config.MergeZipsCmd}",
+			},
+		},
+		"outDir", "dxFlags")
+
 	jarjar = pctx.AndroidStaticRule("jarjar",
 		blueprint.RuleParams{
 			Command:     "${config.JavaCmd} -jar ${config.JarjarCmd} process $rulesFile $in $out",
@@ -186,8 +200,9 @@ type javaBuilderFlags struct {
 	kotlincFlags     string
 	kotlincClasspath classpath
 
-	protoFlags   string
-	protoOutFlag string
+	protoFlags       []string
+	protoOutTypeFlag string // The flag itself: --java_out
+	protoOutParams   string // Parameters to that flag: --java_out=$protoOutParams:$outDir
 }
 
 func TransformKotlinToClasses(ctx android.ModuleContext, outputFile android.WritablePath,
@@ -199,16 +214,21 @@ func TransformKotlinToClasses(ctx android.ModuleContext, outputFile android.Writ
 	inputs := append(android.Paths(nil), srcFiles...)
 	inputs = append(inputs, srcJars...)
 
+	var deps android.Paths
+	deps = append(deps, flags.kotlincClasspath...)
+
 	ctx.Build(pctx, android.BuildParams{
 		Rule:        kotlinc,
 		Description: "kotlinc",
 		Output:      outputFile,
 		Inputs:      inputs,
+		Implicits:   deps,
 		Args: map[string]string{
 			"classpath":    flags.kotlincClasspath.FormJavaClassPath("-classpath"),
 			"kotlincFlags": flags.kotlincFlags,
 			"outDir":       classDir.String(),
-			"javaVersion":  flags.javaVersion,
+			// http://b/69160377 kotlinc only supports -jvm-target 1.6 and 1.8
+			"kotlinJvmTarget": "1.8",
 		},
 	})
 }
@@ -363,6 +383,10 @@ func TransformJarsToJar(ctx android.ModuleContext, outputFile android.WritablePa
 		}
 	}
 
+	// Remove any module-info.class files that may have come from prebuilt jars, they cause problems
+	// for downstream tools like desugar.
+	jarArgs = append(jarArgs, "-stripFile module-info.class")
+
 	if stripDirs {
 		jarArgs = append(jarArgs, "-D")
 	}
@@ -385,7 +409,7 @@ func TransformDesugar(ctx android.ModuleContext, outputFile android.WritablePath
 	dumpDir := android.PathForModuleOut(ctx, "desugar", "classes")
 
 	javaFlags := ""
-	if ctx.AConfig().UseOpenJDK9() {
+	if ctx.Config().UseOpenJDK9() {
 		javaFlags = "--add-opens java.base/java.lang.invoke=ALL-UNNAMED"
 	}
 
@@ -419,9 +443,15 @@ func TransformClassesJarToDexJar(ctx android.ModuleContext, outputFile android.W
 
 	outDir := android.PathForModuleOut(ctx, "dex")
 
+	rule := dx
+	desc := "dx"
+	if ctx.Config().UseD8Desugar() {
+		rule = d8
+		desc = "d8"
+	}
 	ctx.Build(pctx, android.BuildParams{
-		Rule:        dx,
-		Description: "dx",
+		Rule:        rule,
+		Description: desc,
 		Output:      outputFile,
 		Input:       classesJar,
 		Args: map[string]string{

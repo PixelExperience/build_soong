@@ -305,7 +305,7 @@ func archMutator(mctx BottomUpMutatorContext) {
 	primaryModules := make(map[int]bool)
 
 	for _, class := range osClasses {
-		targets := mctx.AConfig().Targets[class]
+		targets := mctx.Config().Targets[class]
 		if len(targets) == 0 {
 			continue
 		}
@@ -325,7 +325,7 @@ func archMutator(mctx BottomUpMutatorContext) {
 		var prefer32 bool
 		switch class {
 		case Device:
-			prefer32 = mctx.AConfig().DevicePrefer32BitExecutables()
+			prefer32 = mctx.Config().DevicePrefer32BitExecutables()
 		case HostCross:
 			// Windows builds always prefer 32-bit
 			prefer32 = true
@@ -774,7 +774,7 @@ func (a *ModuleBase) setArchProperties(ctx BottomUpMutatorContext) {
 		// that are being compiled for 64-bit.  Its expected use case is binaries like linker and
 		// debuggerd that need to know when they are a 32-bit process running on a 64-bit device
 		if os.Class == Device {
-			if ctx.AConfig().Android64() {
+			if ctx.Config().Android64() {
 				field := "Android64"
 				prefix := "target.android64"
 				a.appendProperties(ctx, genProps, targetProp, field, prefix)
@@ -785,13 +785,13 @@ func (a *ModuleBase) setArchProperties(ctx BottomUpMutatorContext) {
 			}
 
 			if arch.ArchType == X86 && (hasArmAbi(arch) ||
-				hasArmAndroidArch(ctx.AConfig().Targets[Device])) {
+				hasArmAndroidArch(ctx.Config().Targets[Device])) {
 				field := "Arm_on_x86"
 				prefix := "target.arm_on_x86"
 				a.appendProperties(ctx, genProps, targetProp, field, prefix)
 			}
 			if arch.ArchType == X86_64 && (hasArmAbi(arch) ||
-				hasArmAndroidArch(ctx.AConfig().Targets[Device])) {
+				hasArmAndroidArch(ctx.Config().Targets[Device])) {
 				field := "Arm_on_x86_64"
 				prefix := "target.arm_on_x86_64"
 				a.appendProperties(ctx, genProps, targetProp, field, prefix)
@@ -971,7 +971,7 @@ func getMegaDeviceConfig() []archConfig {
 
 func getNdkAbisConfig() []archConfig {
 	return []archConfig{
-		{"arm", "armv5te", "", []string{"armeabi"}},
+		{"arm", "armv7-a", "", []string{"armeabi"}},
 		{"arm64", "armv8-a", "", []string{"arm64-v8a"}},
 		{"x86", "", "", []string{"x86"}},
 		{"x86_64", "", "", []string{"x86_64"}},
@@ -1072,19 +1072,30 @@ func getCommonTargets(targets []Target) []Target {
 	return ret
 }
 
+func preferTargets(targets []Target, filters ...string) []Target {
+	for _, filter := range filters {
+		buildTargets := filterMultilibTargets(targets, filter)
+		if len(buildTargets) > 0 {
+			return buildTargets
+		}
+	}
+	return nil
+}
+
 // Use the module multilib setting to select one or more targets from a target list
 func decodeMultilib(multilib string, targets []Target, prefer32 bool) ([]Target, error) {
 	buildTargets := []Target{}
-	if multilib == "first" {
-		if prefer32 {
-			multilib = "prefer32"
-		} else {
-			multilib = "prefer64"
-		}
-	}
+
 	switch multilib {
 	case "common":
-		buildTargets = append(buildTargets, getCommonTargets(targets)...)
+		buildTargets = getCommonTargets(targets)
+	case "common_first":
+		buildTargets = getCommonTargets(targets)
+		if prefer32 {
+			buildTargets = append(buildTargets, preferTargets(targets, "lib32", "lib64")...)
+		} else {
+			buildTargets = append(buildTargets, preferTargets(targets, "lib64", "lib32")...)
+		}
 	case "both":
 		if prefer32 {
 			buildTargets = append(buildTargets, filterMultilibTargets(targets, "lib32")...)
@@ -1097,16 +1108,14 @@ func decodeMultilib(multilib string, targets []Target, prefer32 bool) ([]Target,
 		buildTargets = filterMultilibTargets(targets, "lib32")
 	case "64":
 		buildTargets = filterMultilibTargets(targets, "lib64")
+	case "first":
+		if prefer32 {
+			buildTargets = preferTargets(targets, "lib32", "lib64")
+		} else {
+			buildTargets = preferTargets(targets, "lib64", "lib32")
+		}
 	case "prefer32":
-		buildTargets = filterMultilibTargets(targets, "lib32")
-		if len(buildTargets) == 0 {
-			buildTargets = filterMultilibTargets(targets, "lib64")
-		}
-	case "prefer64":
-		buildTargets = filterMultilibTargets(targets, "lib64")
-		if len(buildTargets) == 0 {
-			buildTargets = filterMultilibTargets(targets, "lib32")
-		}
+		buildTargets = preferTargets(targets, "lib32", "lib64")
 	default:
 		return nil, fmt.Errorf(`compile_multilib must be "both", "first", "32", "64", or "prefer32" found %q`,
 			multilib)

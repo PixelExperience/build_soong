@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/google/blueprint"
 
@@ -73,7 +74,7 @@ type headerModule struct {
 
 	properties headerProperies
 
-	installPaths []string
+	installPaths android.Paths
 	licensePath  android.ModuleSrcPath
 }
 
@@ -119,6 +120,14 @@ func (m *headerModule) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 
 	m.licensePath = android.PathForModuleSrc(ctx, String(m.properties.License))
 
+	// When generating NDK prebuilts, skip installing MIPS headers,
+	// but keep them when doing regular platform build.
+	// Ndk_abis property is only set to true with build/soong/scripts/build-ndk-prebuilts.sh
+	// TODO: Revert this once MIPS is supported in NDK again.
+	if Bool(ctx.AConfig().Ndk_abis) && strings.Contains(ctx.ModuleName(), "mips") {
+		return
+	}
+
 	srcFiles := ctx.ExpandSources(m.properties.Srcs, nil)
 	for _, header := range srcFiles {
 		installDir := getHeaderInstallDir(ctx, header, String(m.properties.From),
@@ -130,7 +139,7 @@ func (m *headerModule) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 				"expected header install path (%q) not equal to actual install path %q",
 				installPath, installedPath))
 		}
-		m.installPaths = append(m.installPaths, installPath.String())
+		m.installPaths = append(m.installPaths, installPath)
 	}
 
 	if len(m.installPaths) == 0 {
@@ -156,13 +165,13 @@ type preprocessedHeaderProperies struct {
 	//
 	// Will install $SYSROOT/usr/include/foo/bar/baz.h. If `from` were instead
 	// "include/foo", it would have installed $SYSROOT/usr/include/bar/baz.h.
-	From string
+	From *string
 
 	// Install path within the sysroot. This is relative to usr/include.
-	To string
+	To *string
 
 	// Path to the NOTICE file associated with the headers.
-	License string
+	License *string
 }
 
 // Like ndk_headers, but preprocesses the headers with the bionic versioner:
@@ -177,7 +186,7 @@ type preprocessedHeaderModule struct {
 
 	properties preprocessedHeaderProperies
 
-	installPaths []string
+	installPaths android.Paths
 	licensePath  android.ModuleSrcPath
 }
 
@@ -185,25 +194,25 @@ func (m *preprocessedHeaderModule) DepsMutator(ctx android.BottomUpMutatorContex
 }
 
 func (m *preprocessedHeaderModule) GenerateAndroidBuildActions(ctx android.ModuleContext) {
-	if m.properties.License == "" {
+	if String(m.properties.License) == "" {
 		ctx.PropertyErrorf("license", "field is required")
 	}
 
-	m.licensePath = android.PathForModuleSrc(ctx, m.properties.License)
+	m.licensePath = android.PathForModuleSrc(ctx, String(m.properties.License))
 
-	fromSrcPath := android.PathForModuleSrc(ctx, m.properties.From)
-	toOutputPath := getCurrentIncludePath(ctx).Join(ctx, m.properties.To)
+	fromSrcPath := android.PathForModuleSrc(ctx, String(m.properties.From))
+	toOutputPath := getCurrentIncludePath(ctx).Join(ctx, String(m.properties.To))
 	srcFiles := ctx.Glob(filepath.Join(fromSrcPath.String(), "**/*.h"), nil)
 	var installPaths []android.WritablePath
 	for _, header := range srcFiles {
-		installDir := getHeaderInstallDir(ctx, header, m.properties.From, m.properties.To)
+		installDir := getHeaderInstallDir(ctx, header, String(m.properties.From), String(m.properties.To))
 		installPath := installDir.Join(ctx, header.Base())
 		installPaths = append(installPaths, installPath)
-		m.installPaths = append(m.installPaths, installPath.String())
+		m.installPaths = append(m.installPaths, installPath)
 	}
 
 	if len(m.installPaths) == 0 {
-		ctx.ModuleErrorf("glob %q matched zero files", m.properties.From)
+		ctx.ModuleErrorf("glob %q matched zero files", String(m.properties.From))
 	}
 
 	processHeadersWithVersioner(ctx, fromSrcPath, toOutputPath, srcFiles, installPaths)

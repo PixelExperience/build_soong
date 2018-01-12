@@ -1,3 +1,17 @@
+// Copyright 2017 Google Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package main
 
 import (
@@ -10,7 +24,8 @@ import (
 )
 
 const (
-	clear_vars = "__android_mk_clear_vars"
+	clear_vars      = "__android_mk_clear_vars"
+	include_ignored = "__android_mk_include_ignored"
 )
 
 type bpVariable struct {
@@ -34,7 +49,6 @@ var rewriteProperties = map[string](func(variableAssignmentContext) error){
 	"LOCAL_MODULE_CLASS":          prebuiltClass,
 	"LOCAL_MODULE_STEM":           stem,
 	"LOCAL_MODULE_HOST_OS":        hostOs,
-	"LOCAL_SRC_FILES":             srcFiles,
 	"LOCAL_SANITIZE":              sanitize(""),
 	"LOCAL_SANITIZE_DIAG":         sanitize("diag."),
 	"LOCAL_CFLAGS":                cflags,
@@ -78,9 +92,13 @@ func init() {
 			"LOCAL_RENDERSCRIPT_TARGET_API": "renderscript.target_api",
 			"LOCAL_NOTICE_FILE":             "notice",
 			"LOCAL_JAVA_LANGUAGE_VERSION":   "java_version",
+			"LOCAL_INSTRUMENTATION_FOR":     "instrumentation_for",
+
+			"LOCAL_DEX_PREOPT_PROFILE_CLASS_LISTING": "dex_preopt.profile",
 		})
 	addStandardProperties(bpparser.ListType,
 		map[string]string{
+			"LOCAL_SRC_FILES":                     "srcs",
 			"LOCAL_SRC_FILES_EXCLUDE":             "exclude_srcs",
 			"LOCAL_HEADER_LIBRARIES":              "header_libs",
 			"LOCAL_SHARED_LIBRARIES":              "shared_libs",
@@ -134,8 +152,14 @@ func init() {
 			"LOCAL_TIDY":                     "tidy",
 			"LOCAL_PROPRIETARY_MODULE":       "proprietary",
 			"LOCAL_VENDOR_MODULE":            "vendor",
+			"LOCAL_ODM_MODULE":               "device_specific",
+			"LOCAL_OEM_MODULE":               "product_specific",
 			"LOCAL_EXPORT_PACKAGE_RESOURCES": "export_package_resources",
-			"LOCAL_DEX_PREOPT":               "dex_preopt",
+			"LOCAL_PRIVILEGED_MODULE":        "privileged",
+
+			"LOCAL_DEX_PREOPT":                  "dex_preopt.enabled",
+			"LOCAL_DEX_PREOPT_APP_IMAGE":        "dex_preopt.app_image",
+			"LOCAL_DEX_PREOPT_GENERATE_PROFILE": "dex_preopt.profile_guided",
 		})
 }
 
@@ -366,50 +390,6 @@ func hostOs(ctx variableAssignmentContext) error {
 	}
 
 	return err
-}
-
-func splitSrcsLogtags(value bpparser.Expression) (string, bpparser.Expression, error) {
-	switch v := value.(type) {
-	case *bpparser.Variable:
-		// TODO: attempt to split variables?
-		return "srcs", value, nil
-	case *bpparser.Operator:
-		// TODO: attempt to handle expressions?
-		return "srcs", value, nil
-	case *bpparser.String:
-		if strings.HasSuffix(v.Value, ".logtags") {
-			return "logtags", value, nil
-		}
-		return "srcs", value, nil
-	default:
-		return "", nil, fmt.Errorf("splitSrcsLogtags expected a string, got %s", value.Type())
-	}
-
-}
-
-func srcFiles(ctx variableAssignmentContext) error {
-	val, err := makeVariableToBlueprint(ctx.file, ctx.mkvalue, bpparser.ListType)
-	if err != nil {
-		return err
-	}
-
-	lists, err := splitBpList(val, splitSrcsLogtags)
-
-	if srcs, ok := lists["srcs"]; ok && !emptyList(srcs) {
-		err = setVariable(ctx.file, ctx.append, ctx.prefix, "srcs", srcs, true)
-		if err != nil {
-			return err
-		}
-	}
-
-	if logtags, ok := lists["logtags"]; ok && !emptyList(logtags) {
-		err = setVariable(ctx.file, true, ctx.prefix, "logtags", logtags, true)
-		if err != nil {
-			return err
-		}
-	}
-
-	return nil
 }
 
 func sanitize(sub string) func(ctx variableAssignmentContext) error {
@@ -647,6 +627,8 @@ var conditionalTranslations = map[string]map[bool]string{
 		false: "target.not_linux_glibc"},
 	"(,$(TARGET_BUILD_APPS))": {
 		false: "product_variables.unbundled_build"},
+	"($(TARGET_BUILD_APPS),)": {
+		false: "product_variables.unbundled_build"},
 	"($(TARGET_BUILD_PDK),true)": {
 		true: "product_variables.pdk"},
 	"($(TARGET_BUILD_PDK), true)": {
@@ -657,26 +639,23 @@ func mydir(args []string) string {
 	return "."
 }
 
-func allJavaFilesUnder(args []string) string {
-	dir := ""
-	if len(args) > 0 {
-		dir = strings.TrimSpace(args[0])
+func allFilesUnder(wildcard string) func(args []string) string {
+	return func(args []string) string {
+		dir := ""
+		if len(args) > 0 {
+			dir = strings.TrimSpace(args[0])
+		}
+
+		return fmt.Sprintf("%s/**/"+wildcard, dir)
 	}
-
-	return fmt.Sprintf("%s/**/*.java", dir)
-}
-
-func allProtoFilesUnder(args []string) string {
-	dir := ""
-	if len(args) > 0 {
-		dir = strings.TrimSpace(args[0])
-	}
-
-	return fmt.Sprintf("%s/**/*.proto", dir)
 }
 
 func allSubdirJavaFiles(args []string) string {
 	return "**/*.java"
+}
+
+func includeIgnored(args []string) string {
+	return include_ignored
 }
 
 var moduleTypes = map[string]string{
@@ -712,9 +691,16 @@ func androidScope() mkparser.Scope {
 	globalScope := mkparser.NewScope(nil)
 	globalScope.Set("CLEAR_VARS", clear_vars)
 	globalScope.SetFunc("my-dir", mydir)
-	globalScope.SetFunc("all-java-files-under", allJavaFilesUnder)
-	globalScope.SetFunc("all-proto-files-under", allProtoFilesUnder)
+	globalScope.SetFunc("all-java-files-under", allFilesUnder("*.java"))
+	globalScope.SetFunc("all-proto-files-under", allFilesUnder("*.proto"))
+	globalScope.SetFunc("all-aidl-files-under", allFilesUnder("*.aidl"))
+	globalScope.SetFunc("all-Iaidl-files-under", allFilesUnder("I*.aidl"))
+	globalScope.SetFunc("all-logtags-files-under", allFilesUnder("*.logtags"))
 	globalScope.SetFunc("all-subdir-java-files", allSubdirJavaFiles)
+	globalScope.SetFunc("all-makefiles-under", includeIgnored)
+	globalScope.SetFunc("first-makefiles-under", includeIgnored)
+	globalScope.SetFunc("all-named-subdir-makefiles", includeIgnored)
+	globalScope.SetFunc("all-subdir-makefiles", includeIgnored)
 
 	for k, v := range moduleTypes {
 		globalScope.Set(k, v)

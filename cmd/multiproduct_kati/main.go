@@ -15,7 +15,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"flag"
 	"fmt"
@@ -25,6 +24,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"android/soong/ui/build"
@@ -57,6 +57,7 @@ var onlySoong = flag.Bool("only-soong", false, "Only run product config and Soon
 var buildVariant = flag.String("variant", "eng", "build variant to use")
 
 var skipProducts = flag.String("skip-products", "", "comma-separated list of products to skip (known failures, etc)")
+var includeProducts = flag.String("products", "", "comma-separated list of products to build")
 
 const errorLeadingLines = 20
 const errorTrailingLines = 20
@@ -159,6 +160,39 @@ func (s *Status) Finished() int {
 	return s.failed
 }
 
+// TODO(b/70370883): This tool uses a lot of open files -- over the default
+// soft limit of 1024 on some systems. So bump up to the hard limit until I fix
+// the algorithm.
+func setMaxFiles(log logger.Logger) {
+	var limits syscall.Rlimit
+
+	err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &limits)
+	if err != nil {
+		log.Println("Failed to get file limit:", err)
+		return
+	}
+
+	log.Verbosef("Current file limits: %d soft, %d hard", limits.Cur, limits.Max)
+	if limits.Cur == limits.Max {
+		return
+	}
+
+	limits.Cur = limits.Max
+	err = syscall.Setrlimit(syscall.RLIMIT_NOFILE, &limits)
+	if err != nil {
+		log.Println("Failed to increase file limit:", err)
+	}
+}
+
+func inList(str string, list []string) bool {
+	for _, other := range list {
+		if str == other {
+			return true
+		}
+	}
+	return false
+}
+
 func main() {
 	log := logger.New(os.Stderr)
 	defer log.Cleanup()
@@ -219,11 +253,30 @@ func main() {
 		trace.SetOutput(filepath.Join(config.OutDir(), "build.trace"))
 	}
 
+	setMaxFiles(log)
+
 	vars, err := build.DumpMakeVars(buildCtx, config, nil, []string{"all_named_products"})
 	if err != nil {
 		log.Fatal(err)
 	}
-	productsList := strings.Fields(vars["all_named_products"])
+	var productsList []string
+	allProducts := strings.Fields(vars["all_named_products"])
+
+	if *includeProducts != "" {
+		missingProducts := []string{}
+		for _, product := range strings.Split(*includeProducts, ",") {
+			if inList(product, allProducts) {
+				productsList = append(productsList, product)
+			} else {
+				missingProducts = append(missingProducts, product)
+			}
+		}
+		if len(missingProducts) > 0 {
+			log.Fatalf("Products don't exist: %s\n", missingProducts)
+		}
+	} else {
+		productsList = allProducts
+	}
 
 	products := make([]string, 0, len(productsList))
 	skipList := strings.Split(*skipProducts, ",")
@@ -280,7 +333,7 @@ func main() {
 				log.Fatalf("Error creating std.log: %v", err)
 			}
 
-			productLog := logger.New(&bytes.Buffer{})
+			productLog := logger.New(f)
 			productLog.SetOutput(filepath.Join(productLogDir, "soong.log"))
 
 			productCtx := build.Context{&build.ContextImpl{

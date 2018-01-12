@@ -1,7 +1,23 @@
+// Copyright 2017 Google Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package cc
 
 import (
 	"android/soong/android"
+	"android/soong/genrule"
+
 	"fmt"
 	"io/ioutil"
 	"os"
@@ -42,9 +58,12 @@ func testCc(t *testing.T, bp string) *android.TestContext {
 
 	ctx := android.NewTestArchContext()
 	ctx.RegisterModuleType("cc_library", android.ModuleFactoryAdaptor(LibraryFactory))
+	ctx.RegisterModuleType("cc_library_shared", android.ModuleFactoryAdaptor(LibrarySharedFactory))
 	ctx.RegisterModuleType("toolchain_library", android.ModuleFactoryAdaptor(toolchainLibraryFactory))
 	ctx.RegisterModuleType("llndk_library", android.ModuleFactoryAdaptor(llndkLibraryFactory))
+	ctx.RegisterModuleType("llndk_headers", android.ModuleFactoryAdaptor(llndkHeadersFactory))
 	ctx.RegisterModuleType("cc_object", android.ModuleFactoryAdaptor(objectFactory))
+	ctx.RegisterModuleType("filegroup", android.ModuleFactoryAdaptor(genrule.FileGroupFactory))
 	ctx.PreDepsMutators(func(ctx android.RegisterMutatorsContext) {
 		ctx.BottomUp("image", vendorMutator).Parallel()
 		ctx.BottomUp("link", linkageMutator).Parallel()
@@ -108,12 +127,19 @@ func testCc(t *testing.T, bp string) *android.TestContext {
 			name: "crtend_so",
 		}
 
+		cc_library {
+			name: "libprotobuf-cpp-lite",
+		}
+
 `
 
 	ctx.MockFileSystem(map[string][]byte{
 		"Android.bp": []byte(bp),
 		"foo.c":      nil,
 		"bar.c":      nil,
+		"a.proto":    nil,
+		"b.aidl":     nil,
+		"my_include": nil,
 	})
 
 	_, errs := ctx.ParseFileList(".", []string{"Android.bp"})
@@ -265,7 +291,11 @@ func TestSplitListForSize(t *testing.T) {
 var staticLinkDepOrderTestCases = []struct {
 	// This is a string representation of a map[moduleName][]moduleDependency .
 	// It models the dependencies declared in an Android.bp file.
-	in string
+	inStatic string
+
+	// This is a string representation of a map[moduleName][]moduleDependency .
+	// It models the dependencies declared in an Android.bp file.
+	inShared string
 
 	// allOrdered is a string representation of a map[moduleName][]moduleDependency .
 	// The keys of allOrdered specify which modules we would like to check.
@@ -281,82 +311,99 @@ var staticLinkDepOrderTestCases = []struct {
 }{
 	// Simple tests
 	{
-		in:         "",
+		inStatic:   "",
 		outOrdered: "",
 	},
 	{
-		in:         "a:",
+		inStatic:   "a:",
 		outOrdered: "a:",
 	},
 	{
-		in:         "a:b; b:",
+		inStatic:   "a:b; b:",
 		outOrdered: "a:b; b:",
 	},
 	// Tests of reordering
 	{
 		// diamond example
-		in:         "a:d,b,c; b:d; c:d; d:",
+		inStatic:   "a:d,b,c; b:d; c:d; d:",
 		outOrdered: "a:b,c,d; b:d; c:d; d:",
 	},
 	{
 		// somewhat real example
-		in:         "bsdiff_unittest:b,c,d,e,f,g,h,i; e:b",
+		inStatic:   "bsdiff_unittest:b,c,d,e,f,g,h,i; e:b",
 		outOrdered: "bsdiff_unittest:c,d,e,b,f,g,h,i; e:b",
 	},
 	{
 		// multiple reorderings
-		in:         "a:b,c,d,e; d:b; e:c",
+		inStatic:   "a:b,c,d,e; d:b; e:c",
 		outOrdered: "a:d,b,e,c; d:b; e:c",
 	},
 	{
 		// should reorder without adding new transitive dependencies
-		in:         "bin:lib2,lib1;             lib1:lib2,liboptional",
+		inStatic:   "bin:lib2,lib1;             lib1:lib2,liboptional",
 		allOrdered: "bin:lib1,lib2,liboptional; lib1:lib2,liboptional",
 		outOrdered: "bin:lib1,lib2;             lib1:lib2,liboptional",
 	},
 	{
 		// multiple levels of dependencies
-		in:         "a:b,c,d,e,f,g,h; f:b,c,d; b:c,d; c:d",
+		inStatic:   "a:b,c,d,e,f,g,h; f:b,c,d; b:c,d; c:d",
 		allOrdered: "a:e,f,b,c,d,g,h; f:b,c,d; b:c,d; c:d",
 		outOrdered: "a:e,f,b,c,d,g,h; f:b,c,d; b:c,d; c:d",
+	},
+	// shared dependencies
+	{
+		// Note that this test doesn't recurse, to minimize the amount of logic it tests.
+		// So, we don't actually have to check that a shared dependency of c will change the order
+		// of a library that depends statically on b and on c.  We only need to check that if c has
+		// a shared dependency on b, that that shows up in allOrdered.
+		inShared:   "c:b",
+		allOrdered: "c:b",
+		outOrdered: "c:",
+	},
+	{
+		// This test doesn't actually include any shared dependencies but it's a reminder of what
+		// the second phase of the above test would look like
+		inStatic:   "a:b,c; c:b",
+		allOrdered: "a:c,b; c:b",
+		outOrdered: "a:c,b; c:b",
 	},
 	// tiebreakers for when two modules specifying different orderings and there is no dependency
 	// to dictate an order
 	{
 		// if the tie is between two modules at the end of a's deps, then a's order wins
-		in:         "a1:b,c,d,e; a2:b,c,e,d; b:d,e; c:e,d",
+		inStatic:   "a1:b,c,d,e; a2:b,c,e,d; b:d,e; c:e,d",
 		outOrdered: "a1:b,c,d,e; a2:b,c,e,d; b:d,e; c:e,d",
 	},
 	{
 		// if the tie is between two modules at the start of a's deps, then c's order is used
-		in:         "a1:d,e,b1,c1; b1:d,e; c1:e,d;   a2:d,e,b2,c2; b2:d,e; c2:d,e",
+		inStatic:   "a1:d,e,b1,c1; b1:d,e; c1:e,d;   a2:d,e,b2,c2; b2:d,e; c2:d,e",
 		outOrdered: "a1:b1,c1,e,d; b1:d,e; c1:e,d;   a2:b2,c2,d,e; b2:d,e; c2:d,e",
 	},
 	// Tests involving duplicate dependencies
 	{
 		// simple duplicate
-		in:         "a:b,c,c,b",
+		inStatic:   "a:b,c,c,b",
 		outOrdered: "a:c,b",
 	},
 	{
 		// duplicates with reordering
-		in:         "a:b,c,d,c; c:b",
+		inStatic:   "a:b,c,d,c; c:b",
 		outOrdered: "a:d,c,b",
 	},
 	// Tests to confirm the nonexistence of infinite loops.
 	// These cases should never happen, so as long as the test terminates and the
 	// result is deterministic then that should be fine.
 	{
-		in:         "a:a",
+		inStatic:   "a:a",
 		outOrdered: "a:a",
 	},
 	{
-		in:         "a:b;   b:c;   c:a",
+		inStatic:   "a:b;   b:c;   c:a",
 		allOrdered: "a:b,c; b:c,a; c:a,b",
 		outOrdered: "a:b;   b:c;   c:a",
 	},
 	{
-		in:         "a:b,c;   b:c,a;   c:a,b",
+		inStatic:   "a:b,c;   b:c,a;   c:a,b",
 		allOrdered: "a:c,a,b; b:a,b,c; c:b,c,a",
 		outOrdered: "a:c,b;   b:a,c;   c:b,a",
 	},
@@ -403,43 +450,47 @@ func parseModuleDeps(text string) (modulesInOrder []android.Path, allDeps map[an
 	return modulesInOrder, allDeps
 }
 
-func TestStaticLinkDependencyOrdering(t *testing.T) {
+func TestLinkReordering(t *testing.T) {
 	for _, testCase := range staticLinkDepOrderTestCases {
 		errs := []string{}
 
 		// parse testcase
-		_, givenTransitiveDeps := parseModuleDeps(testCase.in)
+		_, givenTransitiveDeps := parseModuleDeps(testCase.inStatic)
 		expectedModuleNames, expectedTransitiveDeps := parseModuleDeps(testCase.outOrdered)
 		if testCase.allOrdered == "" {
 			// allow the test case to skip specifying allOrdered
 			testCase.allOrdered = testCase.outOrdered
 		}
 		_, expectedAllDeps := parseModuleDeps(testCase.allOrdered)
+		_, givenAllSharedDeps := parseModuleDeps(testCase.inShared)
 
 		// For each module whose post-reordered dependencies were specified, validate that
 		// reordering the inputs produces the expected outputs.
 		for _, moduleName := range expectedModuleNames {
 			moduleDeps := givenTransitiveDeps[moduleName]
-			orderedAllDeps, orderedDeclaredDeps := orderDeps(moduleDeps, givenTransitiveDeps)
+			givenSharedDeps := givenAllSharedDeps[moduleName]
+			orderedAllDeps, orderedDeclaredDeps := orderDeps(moduleDeps, givenSharedDeps, givenTransitiveDeps)
 
 			correctAllOrdered := expectedAllDeps[moduleName]
 			if !reflect.DeepEqual(orderedAllDeps, correctAllOrdered) {
 				errs = append(errs, fmt.Sprintf("orderDeps returned incorrect orderedAllDeps."+
-					"\nInput:    %q"+
+					"\nin static:%q"+
+					"\nin shared:%q"+
 					"\nmodule:   %v"+
 					"\nexpected: %s"+
 					"\nactual:   %s",
-					testCase.in, moduleName, correctAllOrdered, orderedAllDeps))
+					testCase.inStatic, testCase.inShared, moduleName, correctAllOrdered, orderedAllDeps))
 			}
 
 			correctOutputDeps := expectedTransitiveDeps[moduleName]
 			if !reflect.DeepEqual(correctOutputDeps, orderedDeclaredDeps) {
 				errs = append(errs, fmt.Sprintf("orderDeps returned incorrect orderedDeclaredDeps."+
-					"\nInput:    %q"+
+					"\nin static:%q"+
+					"\nin shared:%q"+
 					"\nmodule:   %v"+
 					"\nexpected: %s"+
 					"\nactual:   %s",
-					testCase.in, moduleName, correctOutputDeps, orderedDeclaredDeps))
+					testCase.inStatic, testCase.inShared, moduleName, correctOutputDeps, orderedDeclaredDeps))
 			}
 		}
 
@@ -469,7 +520,7 @@ func getOutputPaths(ctx *android.TestContext, variant string, moduleNames []stri
 	return paths
 }
 
-func TestLibDeps(t *testing.T) {
+func TestStaticLibDepReordering(t *testing.T) {
 	ctx := testCc(t, `
 	cc_library {
 		name: "a",
@@ -490,7 +541,7 @@ func TestLibDeps(t *testing.T) {
 
 	variant := "android_arm64_armv8-a_core_static"
 	moduleA := ctx.ModuleForTests("a", variant).Module().(*Module)
-	actual := moduleA.staticDepsInLinkOrder
+	actual := moduleA.depsInLinkOrder
 	expected := getOutputPaths(ctx, variant, []string{"c", "b", "d"})
 
 	if !reflect.DeepEqual(actual, expected) {
@@ -500,6 +551,65 @@ func TestLibDeps(t *testing.T) {
 			actual,
 			expected,
 		)
+	}
+}
+
+func TestStaticLibDepReorderingWithShared(t *testing.T) {
+	ctx := testCc(t, `
+	cc_library {
+		name: "a",
+		static_libs: ["b", "c"],
+	}
+	cc_library {
+		name: "b",
+	}
+	cc_library {
+		name: "c",
+		shared_libs: ["b"],
+	}
+
+	`)
+
+	variant := "android_arm64_armv8-a_core_static"
+	moduleA := ctx.ModuleForTests("a", variant).Module().(*Module)
+	actual := moduleA.depsInLinkOrder
+	expected := getOutputPaths(ctx, variant, []string{"c", "b"})
+
+	if !reflect.DeepEqual(actual, expected) {
+		t.Errorf("staticDeps orderings did not account for shared libs"+
+			"\nactual:   %v"+
+			"\nexpected: %v",
+			actual,
+			expected,
+		)
+	}
+}
+
+func TestLlndkHeaders(t *testing.T) {
+	ctx := testCc(t, `
+	llndk_headers {
+		name: "libllndk_headers",
+		export_include_dirs: ["my_include"],
+	}
+	llndk_library {
+		name: "libllndk",
+		export_llndk_headers: ["libllndk_headers"],
+	}
+	cc_library {
+		name: "libvendor",
+		shared_libs: ["libllndk"],
+		vendor: true,
+		srcs: ["foo.c"],
+		no_libgcc : true,
+		nocrt : true,
+	}
+	`)
+
+	// _static variant is used since _shared reuses *.o from the static variant
+	cc := ctx.ModuleForTests("libvendor", "android_arm_armv7-a-neon_vendor_static").Rule("cc")
+	cflags := cc.Args["cFlags"]
+	if !strings.Contains(cflags, "-Imy_include") {
+		t.Errorf("cflags for libvendor must contain -Imy_include, but was %#v.", cflags)
 	}
 }
 

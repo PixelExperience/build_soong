@@ -18,13 +18,48 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 
 	"android/soong/android"
 	"android/soong/cc/config"
 )
 
+const (
+	modulesAddedWall     = "ModulesAddedWall"
+	modulesUsingWnoError = "ModulesUsingWnoError"
+)
+
 func init() {
 	android.RegisterMakeVarsProvider(pctx, makeVarsProvider)
+}
+
+func getWallWerrorMap(config android.Config, name string) *sync.Map {
+	return config.Once(name, func() interface{} {
+		return &sync.Map{}
+	}).(*sync.Map)
+}
+
+func makeStringOfKeys(ctx android.MakeVarsContext, setName string) string {
+	set := getWallWerrorMap(ctx.Config(), setName)
+	keys := []string{}
+	set.Range(func(key interface{}, value interface{}) bool {
+		keys = append(keys, key.(string))
+		return true
+	})
+	sort.Strings(keys)
+	return strings.Join(keys, " ")
+}
+
+func makeStringOfWarningAllowedProjects() string {
+	allProjects := append([]string{}, config.WarningAllowedProjects...)
+	allProjects = append(allProjects, config.WarningAllowedOldProjects...)
+	sort.Strings(allProjects)
+	// Makefile rules use pattern "path/%" to match module paths.
+	if len(allProjects) > 0 {
+		return strings.Join(allProjects, "% ") + "%"
+	} else {
+		return ""
+	}
 }
 
 func makeVarsProvider(ctx android.MakeVarsContext) {
@@ -63,6 +98,10 @@ func makeVarsProvider(ctx android.MakeVarsContext) {
 	ctx.Strict("VNDK_SAMEPROCESS_LIBRARIES", strings.Join(vndkSpLibraries, " "))
 	ctx.Strict("LLNDK_LIBRARIES", strings.Join(llndkLibraries, " "))
 	ctx.Strict("VNDK_PRIVATE_LIBRARIES", strings.Join(vndkPrivateLibraries, " "))
+
+	ctx.Strict("ANDROID_WARNING_ALLOWED_PROJECTS", makeStringOfWarningAllowedProjects())
+	ctx.Strict("SOONG_MODULES_ADDED_WALL", makeStringOfKeys(ctx, modulesAddedWall))
+	ctx.Strict("SOONG_MODULES_USING_WNO_ERROR", makeStringOfKeys(ctx, modulesUsingWnoError))
 
 	ctx.Strict("ADDRESS_SANITIZER_CONFIG_EXTRA_CFLAGS", strings.Join(asanCflags, " "))
 	ctx.Strict("ADDRESS_SANITIZER_CONFIG_EXTRA_LDFLAGS", strings.Join(asanLdflags, " "))
@@ -171,6 +210,7 @@ func makeVarsToolchain(ctx android.MakeVarsContext, secondPrefix string,
 	}, " "))
 	ctx.Strict(makePrefix+"GLOBAL_CPPFLAGS", strings.Join([]string{
 		"${config.CommonGlobalCppflags}",
+		fmt.Sprintf("${config.%sGlobalCppflags}", hod),
 		toolchain.Cppflags(),
 	}, " "))
 	ctx.Strict(makePrefix+"GLOBAL_LDFLAGS", strings.Join([]string{
@@ -217,6 +257,7 @@ func makeVarsToolchain(ctx android.MakeVarsContext, secondPrefix string,
 		}, " "))
 		ctx.Strict(clangPrefix+"GLOBAL_CPPFLAGS", strings.Join([]string{
 			"${config.CommonClangGlobalCppflags}",
+			fmt.Sprintf("${config.%sGlobalCppflags}", hod),
 			toolchain.ClangCppflags(),
 		}, " "))
 		ctx.Strict(clangPrefix+"GLOBAL_LDFLAGS", strings.Join([]string{
@@ -236,6 +277,10 @@ func makeVarsToolchain(ctx android.MakeVarsContext, secondPrefix string,
 		// This is used by external/gentoo/...
 		ctx.Strict("CLANG_CONFIG_"+target.Arch.ArchType.Name+"_"+typePrefix+"TRIPLE",
 			toolchain.ClangTriple())
+
+		ctx.Strict(makePrefix+"CLANG_SUPPORTED", "true")
+	} else {
+		ctx.Strict(makePrefix+"CLANG_SUPPORTED", "")
 	}
 
 	ctx.Strict(makePrefix+"CC", gccCmd(toolchain, "gcc"))

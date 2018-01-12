@@ -51,7 +51,7 @@ type FileSystem interface {
 	// getting information about files
 	Open(name string) (file io.ReadCloser, err error)
 	Lstat(path string) (stats os.FileInfo, err error)
-	ReadDir(path string) (contents []os.FileInfo, err error)
+	ReadDir(path string) (contents []DirEntryInfo, err error)
 
 	InodeNumber(info os.FileInfo) (number uint64, err error)
 	DeviceNumber(info os.FileInfo) (number uint64, err error)
@@ -67,8 +67,31 @@ type FileSystem interface {
 	ViewId() (id string) // Some unique id of the user accessing the filesystem
 }
 
+// DentryInfo is a subset of the functionality available through os.FileInfo that might be able
+// to be gleaned through only a syscall.Getdents without requiring a syscall.Lstat of every file.
+type DirEntryInfo interface {
+	Name() string
+	Mode() os.FileMode // the file type encoded as an os.FileMode
+	IsDir() bool
+}
+
+type dirEntryInfo struct {
+	name       string
+	mode       os.FileMode
+	modeExists bool
+}
+
+var _ DirEntryInfo = os.FileInfo(nil)
+
+func (d *dirEntryInfo) Name() string      { return d.name }
+func (d *dirEntryInfo) Mode() os.FileMode { return d.mode }
+func (d *dirEntryInfo) IsDir() bool       { return d.mode.IsDir() }
+func (d *dirEntryInfo) String() string    { return d.name + ": " + d.mode.String() }
+
 // osFs implements FileSystem using the local disk.
 type osFs struct{}
+
+var _ FileSystem = (*osFs)(nil)
 
 func (osFs) Open(name string) (io.ReadCloser, error) { return os.Open(name) }
 
@@ -76,9 +99,18 @@ func (osFs) Lstat(path string) (stats os.FileInfo, err error) {
 	return os.Lstat(path)
 }
 
-func (osFs) ReadDir(path string) (contents []os.FileInfo, err error) {
-	return ioutil.ReadDir(path)
+func (osFs) ReadDir(path string) (contents []DirEntryInfo, err error) {
+	entries, err := readdir(path)
+	if err != nil {
+		return nil, err
+	}
+	for _, entry := range entries {
+		contents = append(contents, entry)
+	}
+
+	return contents, nil
 }
+
 func (osFs) Rename(oldPath string, newPath string) error {
 	return os.Rename(oldPath, newPath)
 }
@@ -153,6 +185,8 @@ type MockFs struct {
 	ReadDirCalls   []string
 	aggregatesLock sync.Mutex
 }
+
+var _ FileSystem = (*MockFs)(nil)
 
 type mockInode struct {
 	modTime     time.Time
@@ -475,7 +509,7 @@ func (m *MockFs) PermTime(info os.FileInfo) (when time.Time, err error) {
 		fmt.Errorf("%v is not a mockFileInfo", info)
 }
 
-func (m *MockFs) ReadDir(path string) (contents []os.FileInfo, err error) {
+func (m *MockFs) ReadDir(path string) (contents []DirEntryInfo, err error) {
 	// update aggregates
 	m.aggregatesLock.Lock()
 	m.ReadDirCalls = append(m.ReadDirCalls, path)
@@ -486,7 +520,7 @@ func (m *MockFs) ReadDir(path string) (contents []os.FileInfo, err error) {
 	if err != nil {
 		return nil, err
 	}
-	results := []os.FileInfo{}
+	results := []DirEntryInfo{}
 	dir, err := m.getDir(path, false)
 	if err != nil {
 		return nil, err

@@ -51,25 +51,30 @@ func TestMain(m *testing.M) {
 
 	os.Exit(run())
 }
-func testJava(t *testing.T, bp string) *android.TestContext {
-	return testJavaWithEnv(t, bp, nil)
+
+func testConfig(env map[string]string) android.Config {
+	return android.TestArchConfig(buildDir, env)
+
 }
 
-func testJavaWithEnv(t *testing.T, bp string, env map[string]string) *android.TestContext {
-	config := android.TestArchConfig(buildDir, env)
+func testContext(config android.Config, bp string,
+	fs map[string][]byte) *android.TestContext {
 
 	ctx := android.NewTestArchContext()
 	ctx.RegisterModuleType("android_app", android.ModuleFactoryAdaptor(AndroidAppFactory))
+	ctx.RegisterModuleType("java_binary_host", android.ModuleFactoryAdaptor(BinaryHostFactory))
 	ctx.RegisterModuleType("java_library", android.ModuleFactoryAdaptor(LibraryFactory(true)))
 	ctx.RegisterModuleType("java_library_host", android.ModuleFactoryAdaptor(LibraryHostFactory))
 	ctx.RegisterModuleType("java_import", android.ModuleFactoryAdaptor(ImportFactory))
 	ctx.RegisterModuleType("java_defaults", android.ModuleFactoryAdaptor(defaultsFactory))
 	ctx.RegisterModuleType("java_system_modules", android.ModuleFactoryAdaptor(SystemModulesFactory))
+	ctx.RegisterModuleType("java_genrule", android.ModuleFactoryAdaptor(genRuleFactory))
 	ctx.RegisterModuleType("filegroup", android.ModuleFactoryAdaptor(genrule.FileGroupFactory))
 	ctx.RegisterModuleType("genrule", android.ModuleFactoryAdaptor(genrule.GenRuleFactory))
 	ctx.PreArchMutators(android.RegisterPrebuiltsPreArchMutators)
 	ctx.PreArchMutators(android.RegisterPrebuiltsPostDepsMutators)
 	ctx.PreArchMutators(android.RegisterDefaultsPreArchMutators)
+	ctx.RegisterPreSingletonType("overlay", android.SingletonFactoryAdaptor(OverlaySingletonFactory))
 	ctx.Register()
 
 	extraModules := []string{
@@ -95,34 +100,39 @@ func testJavaWithEnv(t *testing.T, bp string, env map[string]string) *android.Te
 		`, extra)
 	}
 
-	if config.TargetOpenJDK9() {
-		systemModules := []string{
-			"core-system-modules",
-			"android_stubs_current_system_modules",
-			"android_system_stubs_current_system_modules",
-			"android_test_stubs_current_system_modules",
+	bp += `
+		android_app {
+			name: "framework-res",
+			no_framework_libs: true,
 		}
+	`
 
-		for _, extra := range systemModules {
-			bp += fmt.Sprintf(`
+	systemModules := []string{
+		"core-system-modules",
+		"android_stubs_current_system_modules",
+		"android_system_stubs_current_system_modules",
+		"android_test_stubs_current_system_modules",
+	}
+
+	for _, extra := range systemModules {
+		bp += fmt.Sprintf(`
 			java_system_modules {
 				name: "%s",
 			}
 		`, extra)
-		}
 	}
 
-	ctx.MockFileSystem(map[string][]byte{
-		"Android.bp": []byte(bp),
-		"a.java":     nil,
-		"b.java":     nil,
-		"c.java":     nil,
-		"b.kt":       nil,
-		"a.jar":      nil,
-		"b.jar":      nil,
-		"res/a":      nil,
-		"res/b":      nil,
-		"res2/a":     nil,
+	mockFS := map[string][]byte{
+		"Android.bp":  []byte(bp),
+		"a.java":      nil,
+		"b.java":      nil,
+		"c.java":      nil,
+		"b.kt":        nil,
+		"a.jar":       nil,
+		"b.jar":       nil,
+		"java-res/a":  nil,
+		"java-res/b":  nil,
+		"java-res2/a": nil,
 
 		"prebuilts/sdk/14/android.jar":                nil,
 		"prebuilts/sdk/14/framework.aidl":             nil,
@@ -130,14 +140,40 @@ func testJavaWithEnv(t *testing.T, bp string, env map[string]string) *android.Te
 		"prebuilts/sdk/current/framework.aidl":        nil,
 		"prebuilts/sdk/system_current/android.jar":    nil,
 		"prebuilts/sdk/system_current/framework.aidl": nil,
+		"prebuilts/sdk/system_14/android.jar":         nil,
+		"prebuilts/sdk/system_14/framework.aidl":      nil,
 		"prebuilts/sdk/test_current/android.jar":      nil,
 		"prebuilts/sdk/test_current/framework.aidl":   nil,
-	})
 
+		// For framework-res, which is an implicit dependency for framework
+		"AndroidManifest.xml":                   nil,
+		"build/target/product/security/testkey": nil,
+
+		"build/soong/scripts/jar-wrapper.sh": nil,
+	}
+
+	for k, v := range fs {
+		mockFS[k] = v
+	}
+
+	ctx.MockFileSystem(mockFS)
+
+	return ctx
+}
+
+func run(t *testing.T, ctx *android.TestContext, config android.Config) {
+	t.Helper()
 	_, errs := ctx.ParseFileList(".", []string{"Android.bp"})
 	fail(t, errs)
 	_, errs = ctx.PrepareBuildActions(config)
 	fail(t, errs)
+}
+
+func testJava(t *testing.T, bp string) *android.TestContext {
+	t.Helper()
+	config := testConfig(nil)
+	ctx := testContext(config, bp, nil)
+	run(t, ctx, config)
 
 	return ctx
 }
@@ -219,6 +255,35 @@ func TestArchSpecific(t *testing.T) {
 	}
 }
 
+func TestBinary(t *testing.T) {
+	ctx := testJava(t, `
+		java_library_host {
+			name: "foo",
+			srcs: ["a.java"],
+		}
+
+		java_binary_host {
+			name: "bar",
+			srcs: ["b.java"],
+			static_libs: ["foo"],
+		}
+	`)
+
+	buildOS := android.BuildOs.String()
+
+	bar := ctx.ModuleForTests("bar", buildOS+"_common")
+	barJar := bar.Output("bar.jar").Output.String()
+	barWrapper := ctx.ModuleForTests("bar", buildOS+"_x86_64")
+	barWrapperDeps := barWrapper.Output("bar").Implicits.Strings()
+
+	// Test that the install binary wrapper depends on the installed jar file
+	if len(barWrapperDeps) != 1 || barWrapperDeps[0] != barJar {
+		t.Errorf("expected binary wrapper implicits [%q], got %v",
+			barJar, barWrapperDeps)
+	}
+
+}
+
 var classpathTestcases = []struct {
 	name          string
 	moduleType    string
@@ -264,6 +329,14 @@ var classpathTestcases = []struct {
 		bootclasspath: []string{`""`},
 		system:        "bootclasspath", // special value to tell 1.9 test to expect bootclasspath
 		classpath:     []string{"prebuilts/sdk/system_current/android.jar"},
+	},
+	{
+
+		name:          "system_14",
+		properties:    `sdk_version: "system_14",`,
+		bootclasspath: []string{`""`},
+		system:        "bootclasspath", // special value to tell 1.9 test to expect bootclasspath
+		classpath:     []string{"prebuilts/sdk/system_14/android.jar"},
 	},
 	{
 
@@ -394,7 +467,9 @@ func TestClasspath(t *testing.T) {
 
 			// Test again with javac 1.9
 			t.Run("1.9", func(t *testing.T) {
-				ctx := testJavaWithEnv(t, bp, map[string]string{"EXPERIMENTAL_USE_OPENJDK9": "true"})
+				config := testConfig(map[string]string{"EXPERIMENTAL_USE_OPENJDK9": "true"})
+				ctx := testContext(config, bp, nil)
+				run(t, ctx, config)
 
 				javac := ctx.ModuleForTests("foo", variant).Rule("javac")
 				got := javac.Args["bootClasspath"]
@@ -497,14 +572,14 @@ func TestResources(t *testing.T) {
 		{
 			// Test that a module with java_resource_dirs includes the files
 			name: "resource dirs",
-			prop: `java_resource_dirs: ["res"]`,
-			args: "-C res -f res/a -f res/b",
+			prop: `java_resource_dirs: ["java-res"]`,
+			args: "-C java-res -f java-res/a -f java-res/b",
 		},
 		{
 			// Test that a module with java_resources includes the files
 			name: "resource files",
-			prop: `java_resources: ["res/a", "res/b"]`,
-			args: "-C . -f res/a -f res/b",
+			prop: `java_resources: ["java-res/a", "java-res/b"]`,
+			args: "-C . -f java-res/a -f java-res/b",
 		},
 		{
 			// Test that a module with a filegroup in java_resources includes the files with the
@@ -514,10 +589,10 @@ func TestResources(t *testing.T) {
 			extra: `
 				filegroup {
 					name: "foo-res",
-					path: "res",
-					srcs: ["res/a", "res/b"],
+					path: "java-res",
+					srcs: ["java-res/a", "java-res/b"],
 				}`,
-			args: "-C res -f res/a -f res/b",
+			args: "-C java-res -f java-res/a -f java-res/b",
 		},
 		{
 			// Test that a module with "include_srcs: true" includes its source files in the resources jar
@@ -562,21 +637,21 @@ func TestExcludeResources(t *testing.T) {
 		java_library {
 			name: "foo",
 			srcs: ["a.java"],
-			java_resource_dirs: ["res", "res2"],
-			exclude_java_resource_dirs: ["res2"],
+			java_resource_dirs: ["java-res", "java-res2"],
+			exclude_java_resource_dirs: ["java-res2"],
 		}
 
 		java_library {
 			name: "bar",
 			srcs: ["a.java"],
-			java_resources: ["res/*"],
-			exclude_java_resources: ["res/b"],
+			java_resources: ["java-res/*"],
+			exclude_java_resources: ["java-res/b"],
 		}
 	`)
 
 	fooRes := ctx.ModuleForTests("foo", "android_common").Output("res/foo.jar")
 
-	expected := "-C res -f res/a -f res/b"
+	expected := "-C java-res -f java-res/a -f java-res/b"
 	if fooRes.Args["jarArgs"] != expected {
 		t.Errorf("foo resource jar args %q is not %q",
 			fooRes.Args["jarArgs"], expected)
@@ -585,7 +660,7 @@ func TestExcludeResources(t *testing.T) {
 
 	barRes := ctx.ModuleForTests("bar", "android_common").Output("res/bar.jar")
 
-	expected = "-C . -f res/a"
+	expected = "-C . -f java-res/a"
 	if barRes.Args["jarArgs"] != expected {
 		t.Errorf("bar resource jar args %q is not %q",
 			barRes.Args["jarArgs"], expected)
@@ -606,7 +681,7 @@ func TestGeneratedSources(t *testing.T) {
 
 		genrule {
 			name: "gen",
-			tool_files: ["res/a"],
+			tool_files: ["java-res/a"],
 			out: ["gen.java"],
 		}
 	`)
@@ -630,43 +705,61 @@ func TestKotlin(t *testing.T) {
 	ctx := testJava(t, `
 		java_library {
 			name: "foo",
-                        srcs: ["a.java", "b.kt"],
+			srcs: ["a.java", "b.kt"],
 		}
 
 		java_library {
 			name: "bar",
-                        srcs: ["b.kt"],
+			srcs: ["b.kt"],
+			libs: ["foo"],
+			static_libs: ["baz"],
+		}
+
+		java_library {
+			name: "baz",
+			srcs: ["c.java"],
 		}
 		`)
 
-	kotlinc := ctx.ModuleForTests("foo", "android_common").Rule("kotlinc")
-	javac := ctx.ModuleForTests("foo", "android_common").Rule("javac")
-	jar := ctx.ModuleForTests("foo", "android_common").Output("combined/foo.jar")
+	fooKotlinc := ctx.ModuleForTests("foo", "android_common").Rule("kotlinc")
+	fooJavac := ctx.ModuleForTests("foo", "android_common").Rule("javac")
+	fooJar := ctx.ModuleForTests("foo", "android_common").Output("combined/foo.jar")
 
-	if len(kotlinc.Inputs) != 2 || kotlinc.Inputs[0].String() != "a.java" ||
-		kotlinc.Inputs[1].String() != "b.kt" {
-		t.Errorf(`foo kotlinc inputs %v != ["a.java", "b.kt"]`, kotlinc.Inputs)
+	if len(fooKotlinc.Inputs) != 2 || fooKotlinc.Inputs[0].String() != "a.java" ||
+		fooKotlinc.Inputs[1].String() != "b.kt" {
+		t.Errorf(`foo kotlinc inputs %v != ["a.java", "b.kt"]`, fooKotlinc.Inputs)
 	}
 
-	if len(javac.Inputs) != 1 || javac.Inputs[0].String() != "a.java" {
-		t.Errorf(`foo inputs %v != ["a.java"]`, javac.Inputs)
+	if len(fooJavac.Inputs) != 1 || fooJavac.Inputs[0].String() != "a.java" {
+		t.Errorf(`foo inputs %v != ["a.java"]`, fooJavac.Inputs)
 	}
 
-	if !strings.Contains(javac.Args["classpath"], kotlinc.Output.String()) {
+	if !strings.Contains(fooJavac.Args["classpath"], fooKotlinc.Output.String()) {
 		t.Errorf("foo classpath %v does not contain %q",
-			javac.Args["classpath"], kotlinc.Output.String())
+			fooJavac.Args["classpath"], fooKotlinc.Output.String())
 	}
 
-	if !inList(kotlinc.Output.String(), jar.Inputs.Strings()) {
+	if !inList(fooKotlinc.Output.String(), fooJar.Inputs.Strings()) {
 		t.Errorf("foo jar inputs %v does not contain %q",
-			jar.Inputs.Strings(), kotlinc.Output.String())
+			fooJar.Inputs.Strings(), fooKotlinc.Output.String())
 	}
 
-	kotlinc = ctx.ModuleForTests("bar", "android_common").Rule("kotlinc")
-	jar = ctx.ModuleForTests("bar", "android_common").Output("combined/bar.jar")
+	fooHeaderJar := ctx.ModuleForTests("foo", "android_common").Output("turbine-combined/foo.jar")
+	bazHeaderJar := ctx.ModuleForTests("baz", "android_common").Output("turbine-combined/baz.jar")
+	barKotlinc := ctx.ModuleForTests("bar", "android_common").Rule("kotlinc")
 
-	if len(kotlinc.Inputs) != 1 || kotlinc.Inputs[0].String() != "b.kt" {
-		t.Errorf(`bar kotlinc inputs %v != ["b.kt"]`, kotlinc.Inputs)
+	if len(barKotlinc.Inputs) != 1 || barKotlinc.Inputs[0].String() != "b.kt" {
+		t.Errorf(`bar kotlinc inputs %v != ["b.kt"]`, barKotlinc.Inputs)
+	}
+
+	if !inList(fooHeaderJar.Output.String(), barKotlinc.Implicits.Strings()) {
+		t.Errorf(`expected %q in bar implicits %v`,
+			fooHeaderJar.Output.String(), barKotlinc.Implicits.Strings())
+	}
+
+	if !inList(bazHeaderJar.Output.String(), barKotlinc.Implicits.Strings()) {
+		t.Errorf(`expected %q in bar implicits %v`,
+			bazHeaderJar.Output.String(), barKotlinc.Implicits.Strings())
 	}
 }
 
@@ -679,7 +772,7 @@ func TestTurbine(t *testing.T) {
 
 		java_library {
 			name: "bar",
-                        srcs: ["b.java"],
+			srcs: ["b.java"],
 			static_libs: ["foo"],
 		}
 
@@ -735,7 +828,62 @@ func TestSharding(t *testing.T) {
 	}
 }
 
+func TestJarGenrules(t *testing.T) {
+	ctx := testJava(t, `
+		java_library {
+			name: "foo",
+			srcs: ["a.java"],
+		}
+
+		java_genrule {
+			name: "jargen",
+			tool_files: ["b.java"],
+			cmd: "$(location b.java) $(in) $(out)",
+			out: ["jargen.jar"],
+			srcs: [":foo"],
+		}
+
+		java_library {
+			name: "bar",
+			static_libs: ["jargen"],
+			srcs: ["c.java"],
+		}
+
+		java_library {
+			name: "baz",
+			libs: ["jargen"],
+			srcs: ["c.java"],
+		}
+	`)
+
+	foo := ctx.ModuleForTests("foo", "android_common").Output("javac/foo.jar")
+	jargen := ctx.ModuleForTests("jargen", "android_common").Output("jargen.jar")
+	bar := ctx.ModuleForTests("bar", "android_common").Output("javac/bar.jar")
+	baz := ctx.ModuleForTests("baz", "android_common").Output("javac/baz.jar")
+	barCombined := ctx.ModuleForTests("bar", "android_common").Output("combined/bar.jar")
+
+	if len(jargen.Inputs) != 1 || jargen.Inputs[0].String() != foo.Output.String() {
+		t.Errorf("expected jargen inputs [%q], got %q", foo.Output.String(), jargen.Inputs.Strings())
+	}
+
+	if !strings.Contains(bar.Args["classpath"], jargen.Output.String()) {
+		t.Errorf("bar classpath %v does not contain %q", bar.Args["classpath"], jargen.Output.String())
+	}
+
+	if !strings.Contains(baz.Args["classpath"], jargen.Output.String()) {
+		t.Errorf("baz classpath %v does not contain %q", baz.Args["classpath"], jargen.Output.String())
+	}
+
+	if len(barCombined.Inputs) != 2 ||
+		barCombined.Inputs[0].String() != bar.Output.String() ||
+		barCombined.Inputs[1].String() != jargen.Output.String() {
+		t.Errorf("bar combined jar inputs %v is not [%q, %q]",
+			barCombined.Inputs.Strings(), bar.Output.String(), jargen.Output.String())
+	}
+}
+
 func fail(t *testing.T, errs []error) {
+	t.Helper()
 	if len(errs) > 0 {
 		for _, err := range errs {
 			t.Error(err)

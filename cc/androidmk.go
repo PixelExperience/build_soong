@@ -60,6 +60,9 @@ func (c *Module) AndroidMk() android.AndroidMkData {
 		OutputFile: c.outputFile,
 		Extra: []android.AndroidMkExtraFunc{
 			func(w io.Writer, outputFile android.Path) {
+				if len(c.Properties.Logtags) > 0 {
+					fmt.Fprintln(w, "LOCAL_LOGTAGS_FILES :=", strings.Join(c.Properties.Logtags, " "))
+				}
 				fmt.Fprintln(w, "LOCAL_SANITIZE := never")
 				if len(c.Properties.AndroidMkSharedLibs) > 0 {
 					fmt.Fprintln(w, "LOCAL_SHARED_LIBRARIES := "+strings.Join(c.Properties.AndroidMkSharedLibs, " "))
@@ -318,7 +321,7 @@ func (c *stubDecorator) AndroidMk(ctx AndroidMkContext, ret *android.AndroidMkDa
 	ret.Class = "SHARED_LIBRARIES"
 
 	ret.Extra = append(ret.Extra, func(w io.Writer, outputFile android.Path) {
-		path, file := filepath.Split(c.installPath)
+		path, file := filepath.Split(c.installPath.String())
 		stem := strings.TrimSuffix(file, filepath.Ext(file))
 		fmt.Fprintln(w, "LOCAL_SYSTEM_SHARED_LIBRARIES :=")
 		fmt.Fprintln(w, "LOCAL_MODULE_SUFFIX := "+outputFile.Ext())
@@ -346,5 +349,37 @@ func (c *llndkStubDecorator) AndroidMk(ctx AndroidMkContext, ret *android.Androi
 		fmt.Fprintln(w, "LOCAL_UNINSTALLABLE_MODULE := true")
 		fmt.Fprintln(w, "LOCAL_NO_NOTICE_FILE := true")
 		fmt.Fprintln(w, "LOCAL_USE_VNDK := true")
+	})
+}
+
+func (c *vndkPrebuiltLibraryDecorator) AndroidMk(ctx AndroidMkContext, ret *android.AndroidMkData) {
+	ret.Class = "SHARED_LIBRARIES"
+
+	ret.SubName = vndkSuffix + c.version()
+
+	ret.Extra = append(ret.Extra, func(w io.Writer, outputFile android.Path) {
+		c.libraryDecorator.androidMkWriteExportedFlags(w)
+
+		path := c.path.RelPathString()
+		dir, file := filepath.Split(path)
+		stem := strings.TrimSuffix(file, filepath.Ext(file))
+		fmt.Fprintln(w, "LOCAL_STRIP_MODULE := false")
+		fmt.Fprintln(w, "LOCAL_SYSTEM_SHARED_LIBRARIES :=")
+		fmt.Fprintln(w, "LOCAL_USE_VNDK := true")
+		fmt.Fprintln(w, "LOCAL_BUILT_MODULE_STEM := $(LOCAL_MODULE)"+outputFile.Ext())
+		fmt.Fprintln(w, "LOCAL_MODULE_SUFFIX := "+filepath.Ext(file))
+		fmt.Fprintln(w, "LOCAL_MODULE_PATH := $(OUT_DIR)/"+filepath.Clean(dir))
+		fmt.Fprintln(w, "LOCAL_MODULE_STEM := "+stem)
+	})
+}
+
+func (c *ndkPrebuiltStlLinker) AndroidMk(ctx AndroidMkContext, ret *android.AndroidMkData) {
+	ret.Class = "SHARED_LIBRARIES"
+
+	ret.Extra = append(ret.Extra, func(w io.Writer, outputFile android.Path) {
+		// Prevent make from installing the libraries to obj/lib (since we have
+		// dozens of libraries with the same name, they'll clobber each other
+		// and the real versions of the libraries from the platform).
+		fmt.Fprintln(w, "LOCAL_COPY_TO_INTERMEDIATE_LIBRARIES := false")
 	})
 }

@@ -53,30 +53,26 @@ type AndroidMkData struct {
 
 type AndroidMkExtraFunc func(w io.Writer, outputFile Path)
 
-func AndroidMkSingleton() blueprint.Singleton {
+func AndroidMkSingleton() Singleton {
 	return &androidMkSingleton{}
 }
 
 type androidMkSingleton struct{}
 
-func (c *androidMkSingleton) GenerateBuildActions(ctx blueprint.SingletonContext) {
-	config := ctx.Config().(Config)
-
-	if !config.EmbeddedInMake() {
+func (c *androidMkSingleton) GenerateBuildActions(ctx SingletonContext) {
+	if !ctx.Config().EmbeddedInMake() {
 		return
 	}
 
 	var androidMkModulesList []Module
 
-	ctx.VisitAllModules(func(module blueprint.Module) {
-		if amod, ok := module.(Module); ok {
-			androidMkModulesList = append(androidMkModulesList, amod)
-		}
+	ctx.VisitAllModules(func(module Module) {
+		androidMkModulesList = append(androidMkModulesList, module)
 	})
 
 	sort.Sort(AndroidModulesByName{androidMkModulesList, ctx})
 
-	transMk := PathForOutput(ctx, "Android"+String(config.ProductVariables.Make_suffix)+".mk")
+	transMk := PathForOutput(ctx, "Android"+String(ctx.Config().ProductVariables.Make_suffix)+".mk")
 	if ctx.Failed() {
 		return
 	}
@@ -86,14 +82,13 @@ func (c *androidMkSingleton) GenerateBuildActions(ctx blueprint.SingletonContext
 		ctx.Errorf(err.Error())
 	}
 
-	ctx.Build(pctx, blueprint.BuildParams{
-		Rule:     blueprint.Phony,
-		Outputs:  []string{transMk.String()},
-		Optional: true,
+	ctx.Build(pctx, BuildParams{
+		Rule:   blueprint.Phony,
+		Output: transMk,
 	})
 }
 
-func translateAndroidMk(ctx blueprint.SingletonContext, mkFile string, mods []Module) error {
+func translateAndroidMk(ctx SingletonContext, mkFile string, mods []Module) error {
 	buf := &bytes.Buffer{}
 
 	fmt.Fprintln(buf, "LOCAL_MODULE_MAKEFILE := $(lastword $(MAKEFILE_LIST))")
@@ -145,7 +140,7 @@ func translateAndroidMk(ctx blueprint.SingletonContext, mkFile string, mods []Mo
 	return ioutil.WriteFile(mkFile, buf.Bytes(), 0666)
 }
 
-func translateAndroidMkModule(ctx blueprint.SingletonContext, w io.Writer, mod blueprint.Module) error {
+func translateAndroidMkModule(ctx SingletonContext, w io.Writer, mod blueprint.Module) error {
 	provider, ok := mod.(AndroidMkDataProvider)
 	if !ok {
 		return nil
@@ -159,6 +154,12 @@ func translateAndroidMkModule(ctx blueprint.SingletonContext, w io.Writer, mod b
 	}
 
 	if amod.commonProperties.SkipInstall {
+		return nil
+	}
+
+	if !amod.commonProperties.NamespaceExportedToMake {
+		// TODO(jeffrygaston) do we want to validate that there are no modules being
+		// exported to Kati that depend on this module?
 		return nil
 	}
 
@@ -187,8 +188,7 @@ func translateAndroidMkModule(ctx blueprint.SingletonContext, w io.Writer, mod b
 
 		}
 
-		config := ctx.Config().(Config)
-		if amod.Arch().ArchType != config.Targets[amod.Os().Class][0].Arch.ArchType {
+		if amod.Arch().ArchType != ctx.Config().Targets[amod.Os().Class][0].Arch.ArchType {
 			prefix = "2ND_" + prefix
 		}
 	}
@@ -224,17 +224,20 @@ func translateAndroidMkModule(ctx blueprint.SingletonContext, w io.Writer, mod b
 			fmt.Fprintln(&data.preamble, "LOCAL_MODULE_TARGET_ARCH :=", archStr)
 		}
 
-		if len(amod.commonProperties.Logtags) > 0 {
-			fmt.Fprintln(&data.preamble, "LOCAL_LOGTAGS_FILES := ", strings.Join(amod.commonProperties.Logtags, " "))
-		}
 		if len(amod.commonProperties.Init_rc) > 0 {
 			fmt.Fprintln(&data.preamble, "LOCAL_INIT_RC := ", strings.Join(amod.commonProperties.Init_rc, " "))
 		}
 		if Bool(amod.commonProperties.Proprietary) {
 			fmt.Fprintln(&data.preamble, "LOCAL_PROPRIETARY_MODULE := true")
 		}
-		if Bool(amod.commonProperties.Vendor) {
+		if Bool(amod.commonProperties.Vendor) || Bool(amod.commonProperties.Soc_specific) {
 			fmt.Fprintln(&data.preamble, "LOCAL_VENDOR_MODULE := true")
+		}
+		if Bool(amod.commonProperties.Device_specific) {
+			fmt.Fprintln(&data.preamble, "LOCAL_ODM_MODULE := true")
+		}
+		if Bool(amod.commonProperties.Product_specific) {
+			fmt.Fprintln(&data.preamble, "LOCAL_OEM_MODULE := true")
 		}
 		if amod.commonProperties.Owner != nil {
 			fmt.Fprintln(&data.preamble, "LOCAL_MODULE_OWNER :=", *amod.commonProperties.Owner)

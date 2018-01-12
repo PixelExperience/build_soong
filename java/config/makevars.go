@@ -36,6 +36,8 @@ func makeVarsProvider(ctx android.MakeVarsContext) {
 	}
 
 	ctx.Strict("ANDROID_JAVA_HOME", "${JavaHome}")
+	ctx.Strict("ANDROID_JAVA8_HOME", "prebuilts/jdk/jdk8/${hostPrebuiltTag}")
+	ctx.Strict("ANDROID_JAVA9_HOME", "prebuilts/jdk/jdk9/${hostPrebuiltTag}")
 	ctx.Strict("ANDROID_JAVA_TOOLCHAIN", "${JavaToolchain}")
 	ctx.Strict("JAVA", "${JavaCmd}")
 	ctx.Strict("JAVAC", "${JavacCmd}")
@@ -43,8 +45,17 @@ func makeVarsProvider(ctx android.MakeVarsContext) {
 	ctx.Strict("JAR_ARGS", "${JarArgsCmd}")
 	ctx.Strict("JAVADOC", "${JavadocCmd}")
 	ctx.Strict("COMMON_JDK_FLAGS", "${CommonJdkFlags}")
-	ctx.Strict("DX", "${DxCmd}")
-	ctx.Strict("DX_COMMAND", "${DxCmd} -JXms16M -JXmx2048M")
+
+	if ctx.Config().UseD8Desugar() {
+		ctx.Strict("DX", "${D8Cmd}")
+		ctx.Strict("DX_COMMAND", "${D8Cmd} -JXms16M -JXmx2048M")
+		ctx.Strict("USE_D8_DESUGAR", "true")
+	} else {
+		ctx.Strict("DX", "${DxCmd}")
+		ctx.Strict("DX_COMMAND", "${DxCmd} -JXms16M -JXmx2048M")
+		ctx.Strict("USE_D8_DESUGAR", "false")
+	}
+
 	ctx.Strict("TURBINE", "${TurbineJar}")
 
 	if ctx.Config().IsEnvTrue("RUN_ERROR_PRONE") {
@@ -61,4 +72,8 @@ func makeVarsProvider(ctx android.MakeVarsContext) {
 	}
 
 	ctx.Strict("SOONG_JAVAC_WRAPPER", "${SoongJavacWrapper}")
+	ctx.Strict("EXTRACT_SRCJARS", "${ExtractSrcJarsCmd}")
+
+	ctx.Strict("JACOCO_CLI_JAR", "${JacocoCLIJar}")
+	ctx.Strict("DEFAULT_JACOCO_EXCLUDE_FILTER", strings.Join(DefaultJacocoExcludeFilter, ","))
 }

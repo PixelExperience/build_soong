@@ -196,11 +196,19 @@ var (
 
 	_ = pctx.SourcePathVariable("sAbiDiffer", "prebuilts/build-tools/${config.HostPrebuiltTag}/bin/header-abi-diff")
 
-	// Abidiff check turned on in advice-only mode. Builds will not fail on abi incompatibilties / extensions.
-	sAbiDiff = pctx.AndroidStaticRule("sAbiDiff",
-		blueprint.RuleParams{
-			Command:     "$sAbiDiffer $allowFlags -lib $libName -arch $arch -check-all-apis -o ${out} -new $in -old $referenceDump",
-			CommandDeps: []string{"$sAbiDiffer"},
+	sAbiDiff = pctx.AndroidRuleFunc("sAbiDiff",
+		func(config android.Config) (blueprint.RuleParams, error) {
+
+			commandStr := "($sAbiDiffer $allowFlags -lib $libName -arch $arch -check-all-apis -o ${out} -new $in -old $referenceDump)"
+			distDir := config.ProductVariables.DistDir
+			if distDir != nil && *distDir != "" {
+				distAbiDiffDir := *distDir + "/abidiffs/"
+				commandStr += "  || (mkdir -p " + distAbiDiffDir + " && cp ${out} " + distAbiDiffDir + " && exit 1)"
+			}
+			return blueprint.RuleParams{
+				Command:     commandStr,
+				CommandDeps: []string{"$sAbiDiffer"},
+			}, nil
 		},
 		"allowFlags", "referenceDump", "libName", "arch")
 
@@ -223,27 +231,28 @@ func init() {
 }
 
 type builderFlags struct {
-	globalFlags   string
-	arFlags       string
-	asFlags       string
-	cFlags        string
-	toolingCFlags string // A separate set of Cflags for clang LibTooling tools
-	conlyFlags    string
-	cppFlags      string
-	ldFlags       string
-	libFlags      string
-	yaccFlags     string
-	protoFlags    string
-	tidyFlags     string
-	sAbiFlags     string
-	yasmFlags     string
-	aidlFlags     string
-	rsFlags       string
-	toolchain     config.Toolchain
-	clang         bool
-	tidy          bool
-	coverage      bool
-	sAbiDump      bool
+	globalFlags    string
+	arFlags        string
+	asFlags        string
+	cFlags         string
+	toolingCFlags  string // A separate set of Cflags for clang LibTooling tools
+	conlyFlags     string
+	cppFlags       string
+	ldFlags        string
+	libFlags       string
+	yaccFlags      string
+	protoFlags     string
+	protoOutParams string
+	tidyFlags      string
+	sAbiFlags      string
+	yasmFlags      string
+	aidlFlags      string
+	rsFlags        string
+	toolchain      config.Toolchain
+	clang          bool
+	tidy           bool
+	coverage       bool
+	sAbiDump       bool
 
 	systemIncludeFlags string
 
@@ -281,7 +290,7 @@ func (a Objects) Append(b Objects) Objects {
 
 // Generate rules for compiling multiple .c, .cpp, or .S files to individual .o files
 func TransformSourceToObj(ctx android.ModuleContext, subdir string, srcFiles android.Paths,
-	flags builderFlags, deps android.Paths) Objects {
+	flags builderFlags, pathDeps android.Paths, genDeps android.Paths) Objects {
 
 	objFiles := make(android.Paths, len(srcFiles))
 	var tidyFiles android.Paths
@@ -354,7 +363,8 @@ func TransformSourceToObj(ctx android.ModuleContext, subdir string, srcFiles and
 				Description: "yasm " + srcFile.Rel(),
 				Output:      objFile,
 				Input:       srcFile,
-				OrderOnly:   deps,
+				Implicits:   pathDeps,
+				OrderOnly:   genDeps,
 				Args: map[string]string{
 					"asFlags": flags.yasmFlags,
 				},
@@ -366,7 +376,8 @@ func TransformSourceToObj(ctx android.ModuleContext, subdir string, srcFiles and
 				Description: "windres " + srcFile.Rel(),
 				Output:      objFile,
 				Input:       srcFile,
-				OrderOnly:   deps,
+				Implicits:   pathDeps,
+				OrderOnly:   genDeps,
 				Args: map[string]string{
 					"windresCmd": gccCmd(flags.toolchain, "windres"),
 					"flags":      flags.toolchain.WindresFlags(),
@@ -434,7 +445,8 @@ func TransformSourceToObj(ctx android.ModuleContext, subdir string, srcFiles and
 			Output:          objFile,
 			ImplicitOutputs: implicitOutputs,
 			Input:           srcFile,
-			OrderOnly:       deps,
+			Implicits:       pathDeps,
+			OrderOnly:       genDeps,
 			Args: map[string]string{
 				"cFlags": moduleCflags,
 				"ccCmd":  ccCmd,

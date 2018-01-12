@@ -15,6 +15,8 @@
 package config
 
 import (
+	"path/filepath"
+	"runtime"
 	"strings"
 
 	_ "github.com/google/blueprint/bootstrap"
@@ -28,6 +30,17 @@ var (
 	DefaultBootclasspathLibraries = []string{"core-oj", "core-libart"}
 	DefaultSystemModules          = "core-system-modules"
 	DefaultLibraries              = []string{"ext", "framework", "okhttp"}
+
+	DefaultJacocoExcludeFilter = []string{"org.junit.*", "org.jacoco.*", "org.mockito.*"}
+
+	InstrumentFrameworkModules = []string{
+		"framework",
+		"telephony-common",
+		"services",
+		"android.car",
+		"android.car7",
+		"core-oj",
+	}
 )
 
 func init() {
@@ -54,9 +67,9 @@ func init() {
 
 	pctx.VariableConfigMethod("hostPrebuiltTag", android.Config.PrebuiltOS)
 
-	pctx.VariableFunc("JavaHome", func(config interface{}) (string, error) {
+	pctx.VariableFunc("JavaHome", func(config android.Config) (string, error) {
 		// This is set up and guaranteed by soong_ui
-		return config.(android.Config).Getenv("ANDROID_JAVA_HOME"), nil
+		return config.Getenv("ANDROID_JAVA_HOME"), nil
 	})
 
 	pctx.SourcePathVariable("JavaToolchain", "${JavaHome}/bin")
@@ -70,13 +83,14 @@ func init() {
 	pctx.SourcePathVariable("JrtFsJar", "${JavaHome}/lib/jrt-fs.jar")
 	pctx.SourcePathVariable("Ziptime", "prebuilts/build-tools/${hostPrebuiltTag}/bin/ziptime")
 
-	pctx.SourcePathVariable("ExtractSrcJarsCmd", "build/soong/scripts/extract-src-jars.sh")
+	pctx.SourcePathVariable("ExtractSrcJarsCmd", "build/soong/scripts/extract-srcjars.sh")
 	pctx.SourcePathVariable("JarArgsCmd", "build/soong/scripts/jar-args.sh")
 	pctx.HostBinToolVariable("SoongZipCmd", "soong_zip")
 	pctx.HostBinToolVariable("MergeZipsCmd", "merge_zips")
-	pctx.VariableFunc("DxCmd", func(config interface{}) (string, error) {
-		if config.(android.Config).IsEnvFalse("USE_D8") {
-			if config.(android.Config).UnbundledBuild() || config.(android.Config).IsPdkBuild() {
+	pctx.HostBinToolVariable("Zip2ZipCmd", "zip2zip")
+	pctx.VariableFunc("DxCmd", func(config android.Config) (string, error) {
+		if config.IsEnvFalse("USE_D8") {
+			if config.UnbundledBuild() || config.IsPdkBuild() {
 				return "prebuilts/build-tools/common/bin/dx", nil
 			} else {
 				path, err := pctx.HostBinToolPath(config, "dx")
@@ -93,9 +107,16 @@ func init() {
 			return path.String(), nil
 		}
 	})
-	pctx.VariableFunc("TurbineJar", func(config interface{}) (string, error) {
+	pctx.VariableFunc("D8Cmd", func(config android.Config) (string, error) {
+		path, err := pctx.HostBinToolPath(config, "d8")
+		if err != nil {
+			return "", err
+		}
+		return path.String(), nil
+	})
+	pctx.VariableFunc("TurbineJar", func(config android.Config) (string, error) {
 		turbine := "turbine.jar"
-		if config.(android.Config).UnbundledBuild() {
+		if config.UnbundledBuild() {
 			return "prebuilts/build-tools/common/framework/" + turbine, nil
 		} else {
 			path, err := pctx.HostJavaToolPath(config, turbine)
@@ -111,10 +132,28 @@ func init() {
 
 	pctx.HostBinToolVariable("SoongJavacWrapper", "soong_javac_wrapper")
 
-	pctx.VariableFunc("JavacWrapper", func(config interface{}) (string, error) {
-		if override := config.(android.Config).Getenv("JAVAC_WRAPPER"); override != "" {
+	pctx.VariableFunc("JavacWrapper", func(config android.Config) (string, error) {
+		if override := config.Getenv("JAVAC_WRAPPER"); override != "" {
 			return override + " ", nil
 		}
 		return "", nil
 	})
+
+	pctx.HostJavaToolVariable("JacocoCLIJar", "jacoco-cli.jar")
+
+	hostBinToolVariableWithPrebuilt := func(name, prebuiltDir, tool string) {
+		pctx.VariableFunc(name, func(config android.Config) (string, error) {
+			if config.UnbundledBuild() || config.IsPdkBuild() {
+				return filepath.Join(prebuiltDir, runtime.GOOS, "bin", tool), nil
+			} else {
+				if path, err := pctx.HostBinToolPath(config, tool); err != nil {
+					return "", err
+				} else {
+					return path.String(), nil
+				}
+			}
+		})
+	}
+
+	hostBinToolVariableWithPrebuilt("Aapt2Cmd", "prebuilts/sdk/tools", "aapt2")
 }

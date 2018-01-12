@@ -28,8 +28,6 @@ func init() {
 	pctx.HostBinToolVariable("aidlCmd", "aidl")
 	pctx.SourcePathVariable("logtagsCmd", "build/tools/java-event-log-tags.py")
 	pctx.SourcePathVariable("mergeLogtagsCmd", "build/tools/merge-event-log-tags.py")
-
-	pctx.IntermediatesPathVariable("allLogtagsFile", "all-event-log-tags.txt")
 }
 
 var (
@@ -42,7 +40,7 @@ var (
 
 	logtags = pctx.AndroidStaticRule("logtags",
 		blueprint.RuleParams{
-			Command:     "$logtagsCmd -o $out $in $allLogtagsFile",
+			Command:     "$logtagsCmd -o $out $in",
 			CommandDeps: []string{"$logtagsCmd"},
 		})
 
@@ -85,7 +83,7 @@ func genLogtags(ctx android.ModuleContext, logtagsFile android.Path) android.Pat
 }
 
 func (j *Module) genSources(ctx android.ModuleContext, srcFiles android.Paths,
-	flags javaBuilderFlags) (android.Paths, android.Paths) {
+	flags javaBuilderFlags) android.Paths {
 
 	var protoFiles android.Paths
 	outSrcFiles := make(android.Paths, 0, len(srcFiles))
@@ -106,20 +104,18 @@ func (j *Module) genSources(ctx android.ModuleContext, srcFiles android.Paths,
 		}
 	}
 
-	var outSrcJars android.Paths
-
 	if len(protoFiles) > 0 {
-		protoSrcJar := android.PathForModuleGen(ctx, "proto.src.jar")
+		protoSrcJar := android.PathForModuleGen(ctx, "proto.srcjar")
 		genProto(ctx, protoSrcJar, protoFiles,
-			flags.protoFlags, flags.protoOutFlag, "")
+			flags.protoFlags, flags.protoOutTypeFlag, flags.protoOutParams)
 
-		outSrcJars = append(outSrcJars, protoSrcJar)
+		outSrcFiles = append(outSrcFiles, protoSrcJar)
 	}
 
-	return outSrcFiles, outSrcJars
+	return outSrcFiles
 }
 
-func LogtagsSingleton() blueprint.Singleton {
+func LogtagsSingleton() android.Singleton {
 	return &logtagsSingleton{}
 }
 
@@ -129,18 +125,18 @@ type logtagsProducer interface {
 
 type logtagsSingleton struct{}
 
-func (l *logtagsSingleton) GenerateBuildActions(ctx blueprint.SingletonContext) {
+func (l *logtagsSingleton) GenerateBuildActions(ctx android.SingletonContext) {
 	var allLogtags android.Paths
-	ctx.VisitAllModules(func(module blueprint.Module) {
+	ctx.VisitAllModules(func(module android.Module) {
 		if logtags, ok := module.(logtagsProducer); ok {
 			allLogtags = append(allLogtags, logtags.logtags()...)
 		}
 	})
 
-	ctx.Build(pctx, blueprint.BuildParams{
+	ctx.Build(pctx, android.BuildParams{
 		Rule:        mergeLogtags,
 		Description: "merge logtags",
-		Outputs:     []string{"$allLogtagsFile"},
-		Inputs:      allLogtags.Strings(),
+		Output:      android.PathForIntermediates(ctx, "all-event-log-tags.txt"),
+		Inputs:      allLogtags,
 	})
 }

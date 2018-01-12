@@ -56,6 +56,8 @@ var (
 		"-fdiagnostics-color",
 
 		"-ffunction-sections",
+		"-fdata-sections",
+		"-fno-short-enums",
 		"-funwind-tables",
 		"-fstack-protector-strong",
 		"-Wa,--noexecstack",
@@ -71,6 +73,10 @@ var (
 		"-Werror=format-security",
 	}
 
+	deviceGlobalCppflags = []string{
+		"-fvisibility-inlines-hidden",
+	}
+
 	deviceGlobalLdflags = []string{
 		"-Wl,-z,noexecstack",
 		"-Wl,-z,relro",
@@ -82,6 +88,8 @@ var (
 	}
 
 	hostGlobalCflags = []string{}
+
+	hostGlobalCppflags = []string{}
 
 	hostGlobalLdflags = []string{}
 
@@ -110,6 +118,16 @@ var (
 	ClangDefaultBase         = "prebuilts/clang/host"
 	ClangDefaultVersion      = "clang-4393122"
 	ClangDefaultShortVersion = "5.0.1"
+
+	WarningAllowedProjects = []string{
+		"device/",
+		"vendor/",
+	}
+
+	// Some Android.mk files still have warnings.
+	WarningAllowedOldProjects = []string{
+		"hardware/qcom/",
+	}
 )
 
 var pctx = android.NewPackageContext("android/soong/cc/config")
@@ -122,8 +140,10 @@ func init() {
 	pctx.StaticVariable("CommonGlobalCflags", strings.Join(commonGlobalCflags, " "))
 	pctx.StaticVariable("CommonGlobalConlyflags", strings.Join(commonGlobalConlyflags, " "))
 	pctx.StaticVariable("DeviceGlobalCflags", strings.Join(deviceGlobalCflags, " "))
+	pctx.StaticVariable("DeviceGlobalCppflags", strings.Join(deviceGlobalCppflags, " "))
 	pctx.StaticVariable("DeviceGlobalLdflags", strings.Join(deviceGlobalLdflags, " "))
 	pctx.StaticVariable("HostGlobalCflags", strings.Join(hostGlobalCflags, " "))
+	pctx.StaticVariable("HostGlobalCppflags", strings.Join(hostGlobalCppflags, " "))
 	pctx.StaticVariable("HostGlobalLdflags", strings.Join(hostGlobalLdflags, " "))
 	pctx.StaticVariable("NoOverrideGlobalCflags", strings.Join(noOverrideGlobalCflags, " "))
 
@@ -161,14 +181,14 @@ func init() {
 		[]string{"libnativehelper/include_jni"})
 
 	pctx.SourcePathVariable("ClangDefaultBase", ClangDefaultBase)
-	pctx.VariableFunc("ClangBase", func(config interface{}) (string, error) {
-		if override := config.(android.Config).Getenv("LLVM_PREBUILTS_BASE"); override != "" {
+	pctx.VariableFunc("ClangBase", func(config android.Config) (string, error) {
+		if override := config.Getenv("LLVM_PREBUILTS_BASE"); override != "" {
 			return override, nil
 		}
 		return "${ClangDefaultBase}", nil
 	})
-	pctx.VariableFunc("ClangVersion", func(config interface{}) (string, error) {
-		if override := config.(android.Config).Getenv("LLVM_PREBUILTS_VERSION"); override != "" {
+	pctx.VariableFunc("ClangVersion", func(config android.Config) (string, error) {
+		if override := config.Getenv("LLVM_PREBUILTS_VERSION"); override != "" {
 			return override, nil
 		}
 		return ClangDefaultVersion, nil
@@ -176,8 +196,8 @@ func init() {
 	pctx.StaticVariable("ClangPath", "${ClangBase}/${HostPrebuiltTag}/${ClangVersion}")
 	pctx.StaticVariable("ClangBin", "${ClangPath}/bin")
 
-	pctx.VariableFunc("ClangShortVersion", func(config interface{}) (string, error) {
-		if override := config.(android.Config).Getenv("LLVM_RELEASE_VERSION"); override != "" {
+	pctx.VariableFunc("ClangShortVersion", func(config android.Config) (string, error) {
+		if override := config.Getenv("LLVM_RELEASE_VERSION"); override != "" {
 			return override, nil
 		}
 		return ClangDefaultShortVersion, nil
@@ -203,8 +223,8 @@ func init() {
 			"frameworks/rs/script_api/include",
 		})
 
-	pctx.VariableFunc("CcWrapper", func(config interface{}) (string, error) {
-		if override := config.(android.Config).Getenv("CC_WRAPPER"); override != "" {
+	pctx.VariableFunc("CcWrapper", func(config android.Config) (string, error) {
+		if override := config.Getenv("CC_WRAPPER"); override != "" {
 			return override + " ", nil
 		}
 		return "", nil

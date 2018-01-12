@@ -85,9 +85,6 @@ type LibraryMutatedProperties struct {
 	VariantIsShared bool `blueprint:"mutated"`
 	// This variant is static
 	VariantIsStatic bool `blueprint:"mutated"`
-	// Location of the static library in the sysroot. Empty if the library is
-	// not included in the NDK.
-	NdkSysrootPath string `blueprint:"mutated"`
 }
 
 type FlagExporterProperties struct {
@@ -246,6 +243,10 @@ type libraryDecorator struct {
 	// Source Abi Diff
 	sAbiDiff android.OptionalPath
 
+	// Location of the static library in the sysroot. Empty if the library is
+	// not included in the NDK.
+	ndkSysrootPath android.Path
+
 	// Decorated interafaces
 	*baseCompiler
 	*baseLinker
@@ -317,7 +318,7 @@ func (library *libraryDecorator) linkerFlags(ctx ModuleContext, flags Flags) Fla
 	return flags
 }
 
-func (library *libraryDecorator) compilerFlags(ctx ModuleContext, flags Flags) Flags {
+func (library *libraryDecorator) compilerFlags(ctx ModuleContext, flags Flags, deps PathDeps) Flags {
 	exportIncludeDirs := library.flagExporter.exportedIncludes(ctx)
 	if len(exportIncludeDirs) > 0 {
 		f := includeDirsToFlags(exportIncludeDirs)
@@ -325,7 +326,7 @@ func (library *libraryDecorator) compilerFlags(ctx ModuleContext, flags Flags) F
 		flags.YasmFlags = append(flags.YasmFlags, f)
 	}
 
-	return library.baseCompiler.compilerFlags(ctx, flags)
+	return library.baseCompiler.compilerFlags(ctx, flags, deps)
 }
 
 func extractExportIncludesFromFlags(flags []string) []string {
@@ -383,11 +384,11 @@ func (library *libraryDecorator) compile(ctx ModuleContext, flags Flags, deps Pa
 	if library.static() {
 		srcs := android.PathsForModuleSrc(ctx, library.Properties.Static.Srcs)
 		objs = objs.Append(compileObjs(ctx, buildFlags, android.DeviceStaticLibrary,
-			srcs, library.baseCompiler.deps))
+			srcs, library.baseCompiler.pathDeps, library.baseCompiler.genDeps))
 	} else if library.shared() {
 		srcs := android.PathsForModuleSrc(ctx, library.Properties.Shared.Srcs)
 		objs = objs.Append(compileObjs(ctx, buildFlags, android.DeviceSharedLibrary,
-			srcs, library.baseCompiler.deps))
+			srcs, library.baseCompiler.pathDeps, library.baseCompiler.genDeps))
 	}
 
 	return objs
@@ -651,7 +652,7 @@ func vndkVsNdk(ctx ModuleContext) bool {
 func (library *libraryDecorator) link(ctx ModuleContext,
 	flags Flags, deps PathDeps, objs Objects) android.Path {
 
-	objs = objs.Append(deps.Objs)
+	objs = deps.Objs.Copy().Append(objs)
 	var out android.Path
 	if library.static() || library.header() {
 		out = library.linkStatic(ctx, flags, deps, objs)
@@ -670,8 +671,8 @@ func (library *libraryDecorator) link(ctx ModuleContext,
 			}
 			library.reexportFlags(flags)
 			library.reuseExportedFlags = append(library.reuseExportedFlags, flags...)
-			library.reexportDeps(library.baseCompiler.deps) // TODO: restrict to aidl deps
-			library.reuseExportedDeps = append(library.reuseExportedDeps, library.baseCompiler.deps...)
+			library.reexportDeps(library.baseCompiler.genDeps) // TODO: restrict to aidl deps
+			library.reuseExportedDeps = append(library.reuseExportedDeps, library.baseCompiler.genDeps...)
 		}
 	}
 
@@ -683,8 +684,8 @@ func (library *libraryDecorator) link(ctx ModuleContext,
 			}
 			library.reexportFlags(flags)
 			library.reuseExportedFlags = append(library.reuseExportedFlags, flags...)
-			library.reexportDeps(library.baseCompiler.deps) // TODO: restrict to proto deps
-			library.reuseExportedDeps = append(library.reuseExportedDeps, library.baseCompiler.deps...)
+			library.reexportDeps(library.baseCompiler.genDeps) // TODO: restrict to proto deps
+			library.reuseExportedDeps = append(library.reuseExportedDeps, library.baseCompiler.genDeps...)
 		}
 	}
 
@@ -719,19 +720,21 @@ func (library *libraryDecorator) toc() android.OptionalPath {
 
 func (library *libraryDecorator) install(ctx ModuleContext, file android.Path) {
 	if library.shared() {
-		if ctx.Device() {
-			if ctx.useVndk() {
-				if ctx.isVndkSp() {
-					library.baseInstaller.subDir = "vndk-sp"
-				} else if ctx.isVndk() {
-					library.baseInstaller.subDir = "vndk"
-				}
+		if ctx.Device() && ctx.useVndk() {
+			if ctx.isVndkSp() {
+				library.baseInstaller.subDir = "vndk-sp"
+			} else if ctx.isVndk() {
+				library.baseInstaller.subDir = "vndk"
+			}
+			if ctx.isVndk() && ctx.DeviceConfig().PlatformVndkVersion() != "current" {
+				library.baseInstaller.subDir += "-" + ctx.DeviceConfig().PlatformVndkVersion()
 			}
 		}
 		library.baseInstaller.install(ctx, file)
 	}
 
-	if Bool(library.Properties.Static_ndk_lib) && library.static() {
+	if Bool(library.Properties.Static_ndk_lib) && library.static() &&
+		!ctx.useVndk() && ctx.Device() {
 		installPath := getNdkSysrootBase(ctx).Join(
 			ctx, "usr/lib", ctx.toolchain().ClangTriple(), file.Base())
 
@@ -742,7 +745,7 @@ func (library *libraryDecorator) install(ctx ModuleContext, file android.Path) {
 			Input:       file,
 		})
 
-		library.MutatedProperties.NdkSysrootPath = installPath.String()
+		library.ndkSysrootPath = installPath
 	}
 }
 

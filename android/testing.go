@@ -16,15 +16,26 @@ package android
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/google/blueprint"
 )
 
 func NewTestContext() *TestContext {
-	return &TestContext{
-		Context: blueprint.NewContext(),
+	namespaceExportFilter := func(namespace *Namespace) bool {
+		return true
 	}
+
+	nameResolver := NewNameResolver(namespaceExportFilter)
+	ctx := &TestContext{
+		Context:      blueprint.NewContext(),
+		NameResolver: nameResolver,
+	}
+
+	ctx.SetNameInterface(nameResolver)
+
+	return ctx
 }
 
 func NewTestArchContext() *TestContext {
@@ -36,6 +47,7 @@ func NewTestArchContext() *TestContext {
 type TestContext struct {
 	*blueprint.Context
 	preArch, preDeps, postDeps []RegisterMutatorFunc
+	NameResolver               *NameResolver
 }
 
 func (ctx *TestContext) PreArchMutators(f RegisterMutatorFunc) {
@@ -53,7 +65,7 @@ func (ctx *TestContext) PostDepsMutators(f RegisterMutatorFunc) {
 func (ctx *TestContext) Register() {
 	registerMutators(ctx.Context, ctx.preArch, ctx.preDeps, ctx.postDeps)
 
-	ctx.RegisterSingletonType("env", EnvSingleton)
+	ctx.RegisterSingletonType("env", SingletonFactoryAdaptor(EnvSingleton))
 }
 
 func (ctx *TestContext) ModuleForTests(name, variant string) TestingModule {
@@ -76,6 +88,25 @@ func (ctx *TestContext) ModuleForTests(name, variant string) TestingModule {
 	}
 
 	return TestingModule{module}
+}
+
+// MockFileSystem causes the Context to replace all reads with accesses to the provided map of
+// filenames to contents stored as a byte slice.
+func (ctx *TestContext) MockFileSystem(files map[string][]byte) {
+	// no module list file specified; find every file named Blueprints or Android.bp
+	pathsToParse := []string{}
+	for candidate := range files {
+		base := filepath.Base(candidate)
+		if base == "Blueprints" || base == "Android.bp" {
+			pathsToParse = append(pathsToParse, candidate)
+		}
+	}
+	if len(pathsToParse) < 1 {
+		panic(fmt.Sprintf("No Blueprint or Android.bp files found in mock filesystem: %v\n", files))
+	}
+	files[blueprint.MockModuleListFile] = []byte(strings.Join(pathsToParse, "\n"))
+
+	ctx.Context.MockFileSystem(files)
 }
 
 type TestingModule struct {
@@ -105,16 +136,19 @@ func (m TestingModule) Description(desc string) BuildParams {
 }
 
 func (m TestingModule) Output(file string) BuildParams {
+	var searchedOutputs []string
 	for _, p := range m.module.BuildParamsForTests() {
 		outputs := append(WritablePaths(nil), p.Outputs...)
 		if p.Output != nil {
 			outputs = append(outputs, p.Output)
 		}
 		for _, f := range outputs {
-			if f.Rel() == file {
+			if f.String() == file || f.Rel() == file {
 				return p
 			}
+			searchedOutputs = append(searchedOutputs, f.Rel())
 		}
 	}
-	panic(fmt.Errorf("couldn't find output %q", file))
+	panic(fmt.Errorf("couldn't find output %q.\nall outputs: %v",
+		file, searchedOutputs))
 }

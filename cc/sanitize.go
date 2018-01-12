@@ -17,7 +17,9 @@ package cc
 import (
 	"fmt"
 	"io"
+	"sort"
 	"strings"
+	"sync"
 
 	"android/soong/android"
 	"android/soong/cc/config"
@@ -36,9 +38,10 @@ var (
 		"-fsanitize-blacklist=external/compiler-rt/lib/cfi/cfi_blacklist.txt"}
 	cfiLdflags = []string{"-flto", "-fsanitize-cfi-cross-dso", "-fsanitize=cfi",
 		"-Wl,-plugin-opt,O1"}
-	cfiArflags        = []string{"--plugin ${config.ClangBin}/../lib64/LLVMgold.so"}
-	cfiExportsMapPath = "build/soong/cc/config/cfi_exports.map"
-	cfiExportsMap     android.Path
+	cfiArflags         = []string{"--plugin ${config.ClangBin}/../lib64/LLVMgold.so"}
+	cfiExportsMapPath  = "build/soong/cc/config/cfi_exports.map"
+	cfiExportsMap      android.Path
+	cfiStaticLibsMutex sync.Mutex
 
 	intOverflowCflags = []string{"-fsanitize-blacklist=build/soong/cc/config/integer_overflow_blacklist.txt"}
 )
@@ -122,6 +125,10 @@ type sanitize struct {
 	androidMkRuntimeLibrary string
 }
 
+func init() {
+	android.RegisterMakeVarsProvider(pctx, cfiMakeVarsProvider)
+}
+
 func (sanitize *sanitize) props() []interface{} {
 	return []interface{}{&sanitize.Properties}
 }
@@ -144,12 +151,12 @@ func (sanitize *sanitize) begin(ctx BaseModuleContext) {
 
 	if ctx.clang() {
 		if ctx.Host() {
-			globalSanitizers = ctx.AConfig().SanitizeHost()
+			globalSanitizers = ctx.Config().SanitizeHost()
 		} else {
-			arches := ctx.AConfig().SanitizeDeviceArch()
+			arches := ctx.Config().SanitizeDeviceArch()
 			if len(arches) == 0 || inList(ctx.Arch().ArchType.Name, arches) {
-				globalSanitizers = ctx.AConfig().SanitizeDevice()
-				globalSanitizersDiag = ctx.AConfig().SanitizeDeviceDiag()
+				globalSanitizers = ctx.Config().SanitizeDevice()
+				globalSanitizersDiag = ctx.Config().SanitizeDeviceDiag()
 			}
 		}
 	}
@@ -187,13 +194,13 @@ func (sanitize *sanitize) begin(ctx BaseModuleContext) {
 		}
 
 		if found, globalSanitizers = removeFromList("cfi", globalSanitizers); found && s.Cfi == nil {
-			if !ctx.AConfig().CFIDisabledForPath(ctx.ModuleDir()) {
+			if !ctx.Config().CFIDisabledForPath(ctx.ModuleDir()) {
 				s.Cfi = boolPtr(true)
 			}
 		}
 
 		if found, globalSanitizers = removeFromList("integer_overflow", globalSanitizers); found && s.Integer_overflow == nil {
-			if !ctx.AConfig().IntegerOverflowDisabledForPath(ctx.ModuleDir()) {
+			if !ctx.Config().IntegerOverflowDisabledForPath(ctx.ModuleDir()) {
 				s.Integer_overflow = boolPtr(true)
 			}
 		}
@@ -218,15 +225,15 @@ func (sanitize *sanitize) begin(ctx BaseModuleContext) {
 	}
 
 	// Enable CFI for all components in the include paths
-	if s.Cfi == nil && ctx.AConfig().CFIEnabledForPath(ctx.ModuleDir()) {
+	if s.Cfi == nil && ctx.Config().CFIEnabledForPath(ctx.ModuleDir()) {
 		s.Cfi = boolPtr(true)
-		if inList("cfi", ctx.AConfig().SanitizeDeviceDiag()) {
+		if inList("cfi", ctx.Config().SanitizeDeviceDiag()) {
 			s.Diag.Cfi = boolPtr(true)
 		}
 	}
 
 	// CFI needs gold linker, and mips toolchain does not have one.
-	if !ctx.AConfig().EnableCFI() || ctx.Arch().ArchType == android.Mips || ctx.Arch().ArchType == android.Mips64 {
+	if !ctx.Config().EnableCFI() || ctx.Arch().ArchType == android.Mips || ctx.Arch().ArchType == android.Mips64 {
 		s.Cfi = nil
 		s.Diag.Cfi = nil
 	}
@@ -239,6 +246,12 @@ func (sanitize *sanitize) begin(ctx BaseModuleContext) {
 
 	// Also disable CFI if ASAN is enabled.
 	if Bool(s.Address) {
+		s.Cfi = nil
+		s.Diag.Cfi = nil
+	}
+
+	// Also disable CFI for host builds.
+	if ctx.Host() {
 		s.Cfi = nil
 		s.Diag.Cfi = nil
 	}
@@ -474,12 +487,11 @@ func (sanitize *sanitize) AndroidMk(ctx AndroidMkContext, ret *android.AndroidMk
 			fmt.Fprintln(w, "LOCAL_SHARED_LIBRARIES += "+sanitize.androidMkRuntimeLibrary)
 		}
 	})
-	if ctx.Target().Os.Class == android.Device {
-		if Bool(sanitize.Properties.Sanitize.Cfi) {
-			ret.SubName += ".cfi"
-		} else if Bool(sanitize.Properties.Sanitize.Address) {
-			ret.SubName += ".asan"
-		}
+
+	// Add a suffix for CFI-enabled static libraries to allow surfacing both to make without a
+	// name conflict.
+	if ret.Class == "STATIC_LIBRARIES" && Bool(sanitize.Properties.Sanitize.Cfi) {
+		ret.SubName += ".cfi"
 	}
 }
 
@@ -584,31 +596,60 @@ func sanitizerMutator(t sanitizerType) func(android.BottomUpMutatorContext) {
 
 				modules[0].(*Module).sanitize.Properties.SanitizeDep = false
 				modules[1].(*Module).sanitize.Properties.SanitizeDep = false
-				if mctx.Device() {
-					// CFI and ASAN are currently mutually exclusive so disable
-					// CFI if this is an ASAN variant.
-					if t == asan {
+
+				// We don't need both variants active for anything but CFI-enabled
+				// target static libraries, so suppress the appropriate variant in
+				// all other cases.
+				if t == cfi {
+					if c.static() {
+						if !mctx.Device() {
+							if isSanitizerEnabled {
+								modules[0].(*Module).Properties.PreventInstall = true
+								modules[0].(*Module).Properties.HideFromMake = true
+							} else {
+								modules[1].(*Module).Properties.PreventInstall = true
+								modules[1].(*Module).Properties.HideFromMake = true
+							}
+						} else {
+							cfiStaticLibs := cfiStaticLibs(mctx.Config())
+
+							cfiStaticLibsMutex.Lock()
+							*cfiStaticLibs = append(*cfiStaticLibs, c.Name())
+							cfiStaticLibsMutex.Unlock()
+						}
+					} else {
+						modules[0].(*Module).Properties.PreventInstall = true
+						modules[0].(*Module).Properties.HideFromMake = true
+					}
+				} else if t == asan {
+					if mctx.Device() {
+						// CFI and ASAN are currently mutually exclusive so disable
+						// CFI if this is an ASAN variant.
 						modules[1].(*Module).sanitize.Properties.InSanitizerDir = true
 						modules[1].(*Module).sanitize.SetSanitizer(cfi, false)
 					}
-				} else {
-					if mctx.AConfig().EmbeddedInMake() {
-						if isSanitizerEnabled {
-							modules[0].(*Module).Properties.HideFromMake = true
-						} else {
-							modules[1].(*Module).Properties.HideFromMake = true
-						}
-					}
-				}
-				if !mctx.AConfig().EmbeddedInMake() || !mctx.Device() {
 					if isSanitizerEnabled {
 						modules[0].(*Module).Properties.PreventInstall = true
+						modules[0].(*Module).Properties.HideFromMake = true
 					} else {
 						modules[1].(*Module).Properties.PreventInstall = true
+						modules[1].(*Module).Properties.HideFromMake = true
 					}
 				}
 			}
 			c.sanitize.Properties.SanitizeDep = false
 		}
 	}
+}
+
+func cfiStaticLibs(config android.Config) *[]string {
+	return config.Once("cfiStaticLibs", func() interface{} {
+		return &[]string{}
+	}).(*[]string)
+}
+
+func cfiMakeVarsProvider(ctx android.MakeVarsContext) {
+	cfiStaticLibs := cfiStaticLibs(ctx.Config())
+	sort.Strings(*cfiStaticLibs)
+	ctx.Strict("SOONG_CFI_STATIC_LIBRARIES", strings.Join(*cfiStaticLibs, " "))
 }
