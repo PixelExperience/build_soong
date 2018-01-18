@@ -152,7 +152,16 @@ func NewConfig(ctx Context, args ...string) Config {
 		if override, ok := ret.environ.Get("OVERRIDE_ANDROID_JAVA_HOME"); ok {
 			return override
 		}
-		if v, ok := ret.environ.Get("EXPERIMENTAL_USE_OPENJDK9"); ok && v != "" && v != "false" {
+		v, ok := ret.environ.Get("EXPERIMENTAL_USE_OPENJDK9")
+		if !ok {
+			v2, ok2 := ret.environ.Get("RUN_ERROR_PRONE")
+			if ok2 && (v2 == "true") {
+				v = "false"
+			} else {
+				v = "1.8"
+			}
+		}
+		if v != "false" {
 			return java9Home
 		}
 		return java8Home
@@ -248,8 +257,6 @@ func (c *configImpl) Tapas(ctx Context, apps []string, arch, variant string) {
 
 	var product string
 	switch arch {
-	case "armv5":
-		product = "generic_armv5"
 	case "arm", "":
 		product = "aosp_arm"
 	case "arm64":

@@ -299,7 +299,10 @@ func NewConfig(srcDir, buildDir string) (Config, error) {
 func (c *config) fromEnv() error {
 	switch c.Getenv("EXPERIMENTAL_USE_OPENJDK9") {
 	case "":
-		// Use OpenJDK8
+		if c.Getenv("RUN_ERROR_PRONE") != "true" {
+			// Use OpenJDK9, but target 1.8
+			c.useOpenJDK9 = true
+		}
 	case "false":
 		// Use OpenJDK8
 	case "1.8":
@@ -310,7 +313,7 @@ func (c *config) fromEnv() error {
 		c.useOpenJDK9 = true
 		c.targetOpenJDK9 = true
 	default:
-		return fmt.Errorf(`Invalid value for EXPERIMENTAL_USE_OPENJDK9, should be "", "1.8", or "true"`)
+		return fmt.Errorf(`Invalid value for EXPERIMENTAL_USE_OPENJDK9, should be "", "false", "1.8", or "true"`)
 	}
 
 	return nil
@@ -425,13 +428,6 @@ func (c *config) EmbeddedInMake() bool {
 // TODO: take an AndroidModuleContext to select the device name for multi-device builds
 func (c *config) DeviceName() string {
 	return *c.ProductVariables.DeviceName
-}
-
-func (c *config) DeviceUsesClang() bool {
-	if c.ProductVariables.DeviceUsesClang != nil {
-		return *c.ProductVariables.DeviceUsesClang
-	}
-	return true
 }
 
 func (c *config) ResourceOverlays() []string {
@@ -585,7 +581,7 @@ func (c *config) Android64() bool {
 }
 
 func (c *config) UseD8Desugar() bool {
-	return c.IsEnvTrue("USE_D8_DESUGAR")
+	return !c.IsEnvFalse("USE_D8_DESUGAR")
 }
 
 func (c *config) UseGoma() bool {
@@ -690,12 +686,12 @@ func (c *deviceConfig) NativeCoverageEnabled() bool {
 func (c *deviceConfig) CoverageEnabledForPath(path string) bool {
 	coverage := false
 	if c.config.ProductVariables.CoveragePaths != nil {
-		if prefixInList(path, *c.config.ProductVariables.CoveragePaths) {
+		if PrefixInList(path, *c.config.ProductVariables.CoveragePaths) {
 			coverage = true
 		}
 	}
 	if coverage && c.config.ProductVariables.CoverageExcludePaths != nil {
-		if prefixInList(path, *c.config.ProductVariables.CoverageExcludePaths) {
+		if PrefixInList(path, *c.config.ProductVariables.CoverageExcludePaths) {
 			coverage = false
 		}
 	}
@@ -706,21 +702,21 @@ func (c *config) IntegerOverflowDisabledForPath(path string) bool {
 	if c.ProductVariables.IntegerOverflowExcludePaths == nil {
 		return false
 	}
-	return prefixInList(path, *c.ProductVariables.IntegerOverflowExcludePaths)
+	return PrefixInList(path, *c.ProductVariables.IntegerOverflowExcludePaths)
 }
 
 func (c *config) CFIDisabledForPath(path string) bool {
 	if c.ProductVariables.CFIExcludePaths == nil {
 		return false
 	}
-	return prefixInList(path, *c.ProductVariables.CFIExcludePaths)
+	return PrefixInList(path, *c.ProductVariables.CFIExcludePaths)
 }
 
 func (c *config) CFIEnabledForPath(path string) bool {
 	if c.ProductVariables.CFIIncludePaths == nil {
 		return false
 	}
-	return prefixInList(path, *c.ProductVariables.CFIIncludePaths)
+	return PrefixInList(path, *c.ProductVariables.CFIIncludePaths)
 }
 
 func stringSlice(s *[]string) []string {
