@@ -112,7 +112,7 @@ var (
 	ExperimentalCStdVersion   = "gnu11"
 	ExperimentalCppStdVersion = "gnu++1z"
 
-	NdkMaxPrebuiltVersionInt = 24
+	NdkMaxPrebuiltVersionInt = 27
 
 	// prebuilts/clang default settings.
 	ClangDefaultBase         = "prebuilts/clang/host"
@@ -201,7 +201,7 @@ func init() {
 		}
 		return ClangDefaultShortVersion, nil
 	})
-	pctx.StaticVariable("ClangAsanLibDir", "${ClangPath}/lib64/clang/${ClangShortVersion}/lib/linux")
+	pctx.StaticVariable("ClangAsanLibDir", "${ClangBase}/linux-x86/${ClangVersion}/lib64/clang/${ClangShortVersion}/lib/linux")
 	if runtime.GOOS == "darwin" {
 		pctx.StaticVariable("LLVMGoldPlugin", "${ClangPath}/lib64/LLVMgold.dylib")
 	} else {
