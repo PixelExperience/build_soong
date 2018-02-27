@@ -135,6 +135,9 @@ func init() {
 		// Turn off -Wthread-safety-negative, to avoid breaking projects that use -Weverything.
 		"-D_LIBCPP_ENABLE_THREAD_SAFETY_ANNOTATIONS",
 		"-Wno-thread-safety-negative",
+
+		// libc++'s math.h has an #include_next outside of system_headers.
+		"-Wno-gnu-include-next",
 	}, " "))
 
 	pctx.StaticVariable("ClangExtraTargetCflags", strings.Join([]string{
@@ -148,6 +151,19 @@ func init() {
 		// fixed.
 		//"-Werror=null-dereference",
 		"-Werror=return-type",
+
+		// http://b/72331526 Disable -Wtautological-* until the instances detected by these
+		// new warnings are fixed.
+		"-Wno-tautological-constant-compare",
+
+		// http://b/72331524 Allow null pointer arithmetic until the instances detected by
+		// this new warning are fixed.
+		"-Wno-null-pointer-arithmetic",
+
+		// http://b/72330874 Disable -Wenum-compare until the instances detected by this new
+		// warning are fixed.
+		"-Wno-enum-compare",
+		"-Wno-enum-compare-switch",
 	}, " "))
 }
 

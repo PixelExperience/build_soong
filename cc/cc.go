@@ -143,6 +143,7 @@ type Flags struct {
 	LdFlagsDeps android.Paths // Files depended on by linker flags
 
 	GroupStaticLibs bool
+	ArGoldPlugin    bool // Whether LLVM gold plugin option is passed to llvm-ar
 }
 
 type ObjectLinkerProperties struct {
@@ -214,6 +215,7 @@ type ModuleContextIntf interface {
 	selectedStl() string
 	baseModuleName() string
 	getVndkExtendsModuleName() string
+	isPgoCompile() bool
 }
 
 type ModuleContext interface {
@@ -411,6 +413,13 @@ func (c *Module) isVndk() bool {
 	return false
 }
 
+func (c *Module) isPgoCompile() bool {
+	if pgo := c.pgo; pgo != nil {
+		return pgo.Properties.PgoCompile
+	}
+	return false
+}
+
 func (c *Module) isVndkSp() bool {
 	if vndkdep := c.vndkdep; vndkdep != nil {
 		return vndkdep.isVndkSp()
@@ -508,6 +517,10 @@ func (ctx *moduleContextImpl) useVndk() bool {
 
 func (ctx *moduleContextImpl) isVndk() bool {
 	return ctx.mod.isVndk()
+}
+
+func (ctx *moduleContextImpl) isPgoCompile() bool {
+	return ctx.mod.isPgoCompile()
 }
 
 func (ctx *moduleContextImpl) isVndkSp() bool {
