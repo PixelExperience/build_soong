@@ -103,8 +103,12 @@ type variableProperties struct {
 		}
 
 		Arc struct {
+			Cflags       []string
 			Exclude_srcs []string
+			Include_dirs []string
+			Shared_libs  []string
 			Static_libs  []string
+			Srcs         []string
 		}
 	} `android:"arch_variant"`
 }
@@ -120,13 +124,15 @@ type productVariables struct {
 	Platform_version_active_codenames []string `json:",omitempty"`
 	Platform_version_future_codenames []string `json:",omitempty"`
 	Platform_vndk_version             *string  `json:",omitempty"`
+	Platform_systemsdk_versions       []string `json:",omitempty"`
 
-	DeviceName        *string   `json:",omitempty"`
-	DeviceArch        *string   `json:",omitempty"`
-	DeviceArchVariant *string   `json:",omitempty"`
-	DeviceCpuVariant  *string   `json:",omitempty"`
-	DeviceAbi         *[]string `json:",omitempty"`
-	DeviceVndkVersion *string   `json:",omitempty"`
+	DeviceName              *string   `json:",omitempty"`
+	DeviceArch              *string   `json:",omitempty"`
+	DeviceArchVariant       *string   `json:",omitempty"`
+	DeviceCpuVariant        *string   `json:",omitempty"`
+	DeviceAbi               *[]string `json:",omitempty"`
+	DeviceVndkVersion       *string   `json:",omitempty"`
+	DeviceSystemSdkVersions *[]string `json:",omitempty"`
 
 	DeviceSecondaryArch        *string   `json:",omitempty"`
 	DeviceSecondaryArchVariant *string   `json:",omitempty"`
@@ -178,9 +184,9 @@ type productVariables struct {
 	CFIExcludePaths *[]string `json:",omitempty"`
 	CFIIncludePaths *[]string `json:",omitempty"`
 
-	VendorPath *string `json:",omitempty"`
-	OdmPath    *string `json:",omitempty"`
-	OemPath    *string `json:",omitempty"`
+	VendorPath  *string `json:",omitempty"`
+	OdmPath     *string `json:",omitempty"`
+	ProductPath *string `json:",omitempty"`
 
 	ClangTidy  *bool   `json:",omitempty"`
 	TidyChecks *string `json:",omitempty"`

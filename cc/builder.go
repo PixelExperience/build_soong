@@ -38,7 +38,6 @@ const (
 
 var (
 	abiCheckAllowFlags = []string{
-		"-allow-extensions",
 		"-allow-unreferenced-changes",
 		"-allow-unreferenced-elf-symbol-changes",
 	}
@@ -187,12 +186,12 @@ var (
 
 	sAbiLink = pctx.AndroidStaticRule("sAbiLink",
 		blueprint.RuleParams{
-			Command:        "$sAbiLinker -o ${out} $symbolFilter -arch $arch -api $api $exportedHeaderFlags @${out}.rsp ",
+			Command:        "$sAbiLinker -o ${out} $symbolFilter -arch $arch  $exportedHeaderFlags @${out}.rsp ",
 			CommandDeps:    []string{"$sAbiLinker"},
 			Rspfile:        "${out}.rsp",
 			RspfileContent: "${in}",
 		},
-		"symbolFilter", "arch", "api", "exportedHeaderFlags")
+		"symbolFilter", "arch", "exportedHeaderFlags")
 
 	_ = pctx.SourcePathVariable("sAbiDiffer", "prebuilts/build-tools/${config.HostPrebuiltTag}/bin/header-abi-diff")
 
@@ -290,7 +289,7 @@ func (a Objects) Append(b Objects) Objects {
 
 // Generate rules for compiling multiple .c, .cpp, or .S files to individual .o files
 func TransformSourceToObj(ctx android.ModuleContext, subdir string, srcFiles android.Paths,
-	flags builderFlags, pathDeps android.Paths, genDeps android.Paths) Objects {
+	flags builderFlags, pathDeps android.Paths, cFlagsDeps android.Paths) Objects {
 
 	objFiles := make(android.Paths, len(srcFiles))
 	var tidyFiles android.Paths
@@ -363,8 +362,8 @@ func TransformSourceToObj(ctx android.ModuleContext, subdir string, srcFiles and
 				Description: "yasm " + srcFile.Rel(),
 				Output:      objFile,
 				Input:       srcFile,
-				Implicits:   pathDeps,
-				OrderOnly:   genDeps,
+				Implicits:   cFlagsDeps,
+				OrderOnly:   pathDeps,
 				Args: map[string]string{
 					"asFlags": flags.yasmFlags,
 				},
@@ -376,8 +375,8 @@ func TransformSourceToObj(ctx android.ModuleContext, subdir string, srcFiles and
 				Description: "windres " + srcFile.Rel(),
 				Output:      objFile,
 				Input:       srcFile,
-				Implicits:   pathDeps,
-				OrderOnly:   genDeps,
+				Implicits:   cFlagsDeps,
+				OrderOnly:   pathDeps,
 				Args: map[string]string{
 					"windresCmd": gccCmd(flags.toolchain, "windres"),
 					"flags":      flags.toolchain.WindresFlags(),
@@ -445,8 +444,8 @@ func TransformSourceToObj(ctx android.ModuleContext, subdir string, srcFiles and
 			Output:          objFile,
 			ImplicitOutputs: implicitOutputs,
 			Input:           srcFile,
-			Implicits:       pathDeps,
-			OrderOnly:       genDeps,
+			Implicits:       cFlagsDeps,
+			OrderOnly:       pathDeps,
 			Args: map[string]string{
 				"cFlags": moduleCflags,
 				"ccCmd":  ccCmd,
@@ -681,27 +680,18 @@ func TransformObjToDynamicBinary(ctx android.ModuleContext,
 // Generate a rule to combine .dump sAbi dump files from multiple source files
 // into a single .ldump sAbi dump file
 func TransformDumpToLinkedDump(ctx android.ModuleContext, sAbiDumps android.Paths, soFile android.Path,
-	symbolFile android.OptionalPath, apiLevel, baseName, exportedHeaderFlags string) android.OptionalPath {
+	baseName, exportedHeaderFlags string) android.OptionalPath {
 	outputFile := android.PathForModuleOut(ctx, baseName+".lsdump")
-	var symbolFilterStr string
-	var linkedDumpDep android.Path
-	if symbolFile.Valid() {
-		symbolFilterStr = "-v " + symbolFile.Path().String()
-		linkedDumpDep = symbolFile.Path()
-	} else {
-		linkedDumpDep = soFile
-		symbolFilterStr = "-so " + soFile.String()
-	}
+	symbolFilterStr := "-so " + soFile.String()
 	ctx.Build(pctx, android.BuildParams{
 		Rule:        sAbiLink,
 		Description: "header-abi-linker " + outputFile.Base(),
 		Output:      outputFile,
 		Inputs:      sAbiDumps,
-		Implicit:    linkedDumpDep,
+		Implicit:    soFile,
 		Args: map[string]string{
-			"symbolFilter": symbolFilterStr,
-			"arch":         ctx.Arch().ArchType.Name,
-			"api":          apiLevel,
+			"symbolFilter":        symbolFilterStr,
+			"arch":                ctx.Arch().ArchType.Name,
 			"exportedHeaderFlags": exportedHeaderFlags,
 		},
 	})
@@ -720,8 +710,18 @@ func UnzipRefDump(ctx android.ModuleContext, zippedRefDump android.Path, baseNam
 }
 
 func SourceAbiDiff(ctx android.ModuleContext, inputDump android.Path, referenceDump android.Path,
-	baseName string) android.OptionalPath {
+	baseName, exportedHeaderFlags string, isVndkExt bool) android.OptionalPath {
+
 	outputFile := android.PathForModuleOut(ctx, baseName+".abidiff")
+
+	localAbiCheckAllowFlags := append([]string(nil), abiCheckAllowFlags...)
+	if exportedHeaderFlags == "" {
+		localAbiCheckAllowFlags = append(localAbiCheckAllowFlags, "-advice-only")
+	}
+	if isVndkExt {
+		localAbiCheckAllowFlags = append(localAbiCheckAllowFlags, "-allow-extensions")
+	}
+
 	ctx.Build(pctx, android.BuildParams{
 		Rule:        sAbiDiff,
 		Description: "header-abi-diff " + outputFile.Base(),
@@ -732,7 +732,7 @@ func SourceAbiDiff(ctx android.ModuleContext, inputDump android.Path, referenceD
 			"referenceDump": referenceDump.String(),
 			"libName":       baseName,
 			"arch":          ctx.Arch().ArchType.Name,
-			"allowFlags":    strings.Join(abiCheckAllowFlags, " "),
+			"allowFlags":    strings.Join(localAbiCheckAllowFlags, " "),
 		},
 	})
 	return android.OptionalPathForPath(outputFile)

@@ -142,6 +142,11 @@ type CompilerProperties struct {
 		Exclude_filter []string
 	}
 
+	Errorprone struct {
+		// List of javac flags that should only be used when running errorprone.
+		Javacflags []string
+	}
+
 	Proto struct {
 		// List of extra options that will be passed to the proto generator.
 		Output_params []string
@@ -308,7 +313,7 @@ type sdkDep struct {
 func sdkStringToNumber(ctx android.BaseContext, v string) int {
 	switch v {
 	case "", "current", "system_current", "test_current":
-		return 10000
+		return android.FutureApiLevel
 	default:
 		if i, err := strconv.Atoi(android.GetNumericSdkVersion(v)); err != nil {
 			ctx.PropertyErrorf("sdk_version", "invalid sdk version")
@@ -336,6 +341,22 @@ func decodeSdkDep(ctx android.BaseContext, v string) sdkDep {
 		return sdkDep{}
 	}
 
+	// Ensures that the specificed system SDK version is one of BOARD_SYSTEMSDK_VERSIONS (for vendor apks)
+	// or PRODUCT_SYSTEMSDK_VERSIONS (for other apks or when BOARD_SYSTEMSDK_VERSIONS is not set)
+	if strings.HasPrefix(v, "system_") && i != android.FutureApiLevel {
+		allowed_versions := ctx.DeviceConfig().PlatformSystemSdkVersions()
+		if ctx.DeviceSpecific() || ctx.SocSpecific() {
+			if len(ctx.DeviceConfig().SystemSdkVersions()) > 0 {
+				allowed_versions = ctx.DeviceConfig().SystemSdkVersions()
+			}
+		}
+		version := strings.TrimPrefix(v, "system_")
+		if len(allowed_versions) > 0 && !android.InList(version, allowed_versions) {
+			ctx.PropertyErrorf("sdk_version", "incompatible sdk version %q. System SDK version should be one of %q",
+				v, allowed_versions)
+		}
+	}
+
 	toFile := func(v string) sdkDep {
 		dir := filepath.Join("prebuilts/sdk", v)
 		jar := filepath.Join(dir, "android.jar")
@@ -347,7 +368,7 @@ func decodeSdkDep(ctx android.BaseContext, v string) sdkDep {
 			if strings.Contains(v, "system_") {
 				return sdkDep{
 					invalidVersion: true,
-					module:         "vsdk_v" + strings.Replace(v, "system_", "", 1),
+					module:         "system_sdk_v" + strings.Replace(v, "system_", "", 1),
 				}
 			}
 			return sdkDep{
@@ -630,6 +651,10 @@ func (j *Module) collectBuilderFlags(ctx android.ModuleContext, deps deps) javaB
 		flags.javacFlags = "$javacFlags"
 	}
 
+	if len(j.properties.Errorprone.Javacflags) > 0 {
+		flags.errorProneExtraJavacFlags = strings.Join(j.properties.Errorprone.Javacflags, " ")
+	}
+
 	// javaVersion flag.
 	sdk := sdkStringToNumber(ctx, String(j.deviceProperties.Sdk_version))
 	if j.properties.Java_version != nil {
@@ -638,7 +663,7 @@ func (j *Module) collectBuilderFlags(ctx android.ModuleContext, deps deps) javaB
 		flags.javaVersion = "1.7"
 	} else if ctx.Device() && sdk <= 26 || !ctx.Config().TargetOpenJDK9() {
 		flags.javaVersion = "1.8"
-	} else if ctx.Device() && String(j.deviceProperties.Sdk_version) != "" && sdk == 10000 {
+	} else if ctx.Device() && String(j.deviceProperties.Sdk_version) != "" && sdk == android.FutureApiLevel {
 		// TODO(ccross): once we generate stubs we should be able to use 1.9 for sdk_version: "current"
 		flags.javaVersion = "1.8"
 	} else {
