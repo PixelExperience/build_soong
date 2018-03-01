@@ -35,9 +35,9 @@ var (
 	// Compiling java is not conducive to proper dependency tracking.  The path-matches-class-name
 	// requirement leads to unpredictable generated source file names, and a single .java file
 	// will get compiled into multiple .class files if it contains inner classes.  To work around
-	// this, all java rules write into separate directories and then a post-processing step lists
-	// the files in the the directory into a list file that later rules depend on (and sometimes
-	// read from directly using @<listfile>)
+	// this, all java rules write into separate directories and then are combined into a .jar file
+	// (if the rule produces .class files) or a .srcjar file (if the rule produces .java files).
+	// .srcjar files are unzipped into a temporary directory when compiled with javac.
 	javac = pctx.AndroidGomaStaticRule("javac",
 		blueprint.RuleParams{
 			Command: `rm -rf "$outDir" "$annoDir" "$srcJarDir" && mkdir -p "$outDir" "$annoDir" "$srcJarDir" && ` +
@@ -169,6 +169,7 @@ type javaBuilderFlags struct {
 	protoFlags       []string
 	protoOutTypeFlag string // The flag itself: --java_out
 	protoOutParams   string // Parameters to that flag: --java_out=$protoOutParams:$outDir
+	protoRoot        bool
 }
 
 func TransformKotlinToClasses(ctx android.ModuleContext, outputFile android.WritablePath,
@@ -426,13 +427,6 @@ func (x *classpath) FormDesugarClasspath(optName string) []string {
 	}
 
 	return flags
-}
-
-// Append an android.Paths to the end of the classpath list
-func (x *classpath) AddPaths(paths android.Paths) {
-	for _, path := range paths {
-		*x = append(*x, path)
-	}
 }
 
 // Convert a classpath to an android.Paths
