@@ -35,9 +35,9 @@ var (
 	// Compiling java is not conducive to proper dependency tracking.  The path-matches-class-name
 	// requirement leads to unpredictable generated source file names, and a single .java file
 	// will get compiled into multiple .class files if it contains inner classes.  To work around
-	// this, all java rules write into separate directories and then a post-processing step lists
-	// the files in the the directory into a list file that later rules depend on (and sometimes
-	// read from directly using @<listfile>)
+	// this, all java rules write into separate directories and then are combined into a .jar file
+	// (if the rule produces .class files) or a .srcjar file (if the rule produces .java files).
+	// .srcjar files are unzipped into a temporary directory when compiled with javac.
 	javac = pctx.AndroidGomaStaticRule("javac",
 		blueprint.RuleParams{
 			Command: `rm -rf "$outDir" "$annoDir" "$srcJarDir" && mkdir -p "$outDir" "$annoDir" "$srcJarDir" && ` +
@@ -61,19 +61,23 @@ var (
 
 	kotlinc = pctx.AndroidGomaStaticRule("kotlinc",
 		blueprint.RuleParams{
-			// TODO(ccross): kotlinc doesn't support @ file for arguments, which will limit the
-			// maximum number of input files, especially on darwin.
-			Command: `rm -rf "$outDir" && mkdir -p "$outDir" && ` +
-				`${config.KotlincCmd} $classpath $kotlincFlags ` +
-				`-jvm-target $kotlinJvmTarget -d $outDir $in && ` +
+			Command: `rm -rf "$outDir" "$srcJarDir" && mkdir -p "$outDir" "$srcJarDir" && ` +
+				`${config.ExtractSrcJarsCmd} $srcJarDir $srcJarDir/list $srcJars && ` +
+				`${config.GenKotlinBuildFileCmd} $classpath $outDir $out.rsp $srcJarDir/list > $outDir/kotlinc-build.xml &&` +
+				`${config.KotlincCmd} $kotlincFlags ` +
+				`-jvm-target $kotlinJvmTarget -Xbuild-file=$outDir/kotlinc-build.xml && ` +
 				`${config.SoongZipCmd} -jar -o $out -C $outDir -D $outDir`,
 			CommandDeps: []string{
 				"${config.KotlincCmd}",
 				"${config.KotlinCompilerJar}",
+				"${config.GenKotlinBuildFileCmd}",
 				"${config.SoongZipCmd}",
+				"${config.ExtractSrcJarsCmd}",
 			},
+			Rspfile:        "$out.rsp",
+			RspfileContent: `$in`,
 		},
-		"kotlincFlags", "classpath", "outDir", "kotlinJvmTarget")
+		"kotlincFlags", "classpath", "srcJars", "srcJarDir", "outDir", "kotlinJvmTarget")
 
 	errorprone = pctx.AndroidStaticRule("errorprone",
 		blueprint.RuleParams{
@@ -123,14 +127,16 @@ var (
 
 	jar = pctx.AndroidStaticRule("jar",
 		blueprint.RuleParams{
-			Command:     `${config.SoongZipCmd} -jar -o $out $jarArgs`,
-			CommandDeps: []string{"${config.SoongZipCmd}"},
+			Command:        `${config.SoongZipCmd} -jar -o $out @$out.rsp`,
+			CommandDeps:    []string{"${config.SoongZipCmd}"},
+			Rspfile:        "$out.rsp",
+			RspfileContent: "$jarArgs",
 		},
 		"jarArgs")
 
 	combineJar = pctx.AndroidStaticRule("combineJar",
 		blueprint.RuleParams{
-			Command:     `${config.MergeZipsCmd} -j $jarArgs $out $in`,
+			Command:     `${config.MergeZipsCmd} --ignore-duplicates -j $jarArgs $out $in`,
 			CommandDeps: []string{"${config.MergeZipsCmd}"},
 		},
 		"jarArgs")
@@ -163,19 +169,18 @@ type javaBuilderFlags struct {
 	protoFlags       []string
 	protoOutTypeFlag string // The flag itself: --java_out
 	protoOutParams   string // Parameters to that flag: --java_out=$protoOutParams:$outDir
+	protoRoot        bool
 }
 
 func TransformKotlinToClasses(ctx android.ModuleContext, outputFile android.WritablePath,
 	srcFiles, srcJars android.Paths,
 	flags javaBuilderFlags) {
 
-	classDir := android.PathForModuleOut(ctx, "kotlinc", "classes")
-
 	inputs := append(android.Paths(nil), srcFiles...)
-	inputs = append(inputs, srcJars...)
 
 	var deps android.Paths
 	deps = append(deps, flags.kotlincClasspath...)
+	deps = append(deps, srcJars...)
 
 	ctx.Build(pctx, android.BuildParams{
 		Rule:        kotlinc,
@@ -186,7 +191,9 @@ func TransformKotlinToClasses(ctx android.ModuleContext, outputFile android.Writ
 		Args: map[string]string{
 			"classpath":    flags.kotlincClasspath.FormJavaClassPath("-classpath"),
 			"kotlincFlags": flags.kotlincFlags,
-			"outDir":       classDir.String(),
+			"srcJars":      strings.Join(srcJars.Strings(), " "),
+			"outDir":       android.PathForModuleOut(ctx, "kotlinc", "classes").String(),
+			"srcJarDir":    android.PathForModuleOut(ctx, "kotlinc", "srcJars").String(),
 			// http://b/69160377 kotlinc only supports -jvm-target 1.6 and 1.8
 			"kotlinJvmTarget": "1.8",
 		},
@@ -420,13 +427,6 @@ func (x *classpath) FormDesugarClasspath(optName string) []string {
 	}
 
 	return flags
-}
-
-// Append an android.Paths to the end of the classpath list
-func (x *classpath) AddPaths(paths android.Paths) {
-	for _, path := range paths {
-		*x = append(*x, path)
-	}
 }
 
 // Convert a classpath to an android.Paths

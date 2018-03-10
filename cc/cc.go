@@ -131,9 +131,11 @@ type Flags struct {
 
 	Toolchain config.Toolchain
 	Clang     bool
+	Sdclang   bool
 	Tidy      bool
 	Coverage  bool
 	SAbiDump  bool
+	ProtoRoot bool
 
 	RequiredInstructionSet string
 	DynamicLinker          string
@@ -142,6 +144,7 @@ type Flags struct {
 	LdFlagsDeps android.Paths // Files depended on by linker flags
 
 	GroupStaticLibs bool
+	ArGoldPlugin    bool // Whether LLVM gold plugin option is passed to llvm-ar
 }
 
 type ObjectLinkerProperties struct {
@@ -156,6 +159,9 @@ type ObjectLinkerProperties struct {
 type BaseProperties struct {
 	// compile module with clang instead of gcc
 	Clang *bool `android:"arch_variant"`
+
+	// compile module with SDLLVM instead of AOSP LLVM
+	Sdclang *bool `android:"arch_variant"`
 
 	// Minimum sdk version supported when compiling against the ndk
 	Sdk_version *string
@@ -210,6 +216,7 @@ type ModuleContextIntf interface {
 	selectedStl() string
 	baseModuleName() string
 	getVndkExtendsModuleName() string
+	isPgoCompile() bool
 }
 
 type ModuleContext interface {
@@ -407,6 +414,13 @@ func (c *Module) isVndk() bool {
 	return false
 }
 
+func (c *Module) isPgoCompile() bool {
+	if pgo := c.pgo; pgo != nil {
+		return pgo.Properties.PgoCompile
+	}
+	return false
+}
+
 func (c *Module) isVndkSp() bool {
 	if vndkdep := c.vndkdep; vndkdep != nil {
 		return vndkdep.isVndkSp()
@@ -504,6 +518,10 @@ func (ctx *moduleContextImpl) useVndk() bool {
 
 func (ctx *moduleContextImpl) isVndk() bool {
 	return ctx.mod.isVndk()
+}
+
+func (ctx *moduleContextImpl) isPgoCompile() bool {
+	return ctx.mod.isPgoCompile()
 }
 
 func (ctx *moduleContextImpl) isVndkSp() bool {
@@ -645,6 +663,7 @@ func (c *Module) GenerateAndroidBuildActions(actx android.ModuleContext) {
 	flags := Flags{
 		Toolchain: c.toolchain(ctx),
 		Clang:     c.clang(ctx),
+		Sdclang:   c.sdclang(ctx),
 	}
 	if c.compiler != nil {
 		flags = c.compiler.compilerFlags(ctx, flags, deps)
@@ -1096,6 +1115,25 @@ func checkLinkType(ctx android.ModuleContext, from *Module, to *Module, tag depe
 	}
 }
 
+func (c *Module) sdclang(ctx BaseModuleContext) bool {
+	sdclang := Bool(c.Properties.Sdclang)
+
+	if !c.clang(ctx) {
+		return false
+	}
+
+	// SDLLVM is not for host build
+	if ctx.Host() {
+		return false
+	}
+
+	if c.Properties.Sdclang == nil && config.SDClang {
+		return true
+	}
+
+	return sdclang
+}
+
 // Convert dependencies to paths.  Returns a PathDeps containing paths
 func (c *Module) depsToPaths(ctx android.ModuleContext) PathDeps {
 	var depPaths PathDeps
@@ -1125,13 +1163,13 @@ func (c *Module) depsToPaths(ctx android.ModuleContext) PathDeps {
 			case genHeaderDepTag, genHeaderExportDepTag:
 				if genRule, ok := dep.(genrule.SourceFileGenerator); ok {
 					depPaths.GeneratedHeaders = append(depPaths.GeneratedHeaders,
-						genRule.GeneratedSourceFiles()...)
+						genRule.GeneratedDeps()...)
 					flags := includeDirsToFlags(genRule.GeneratedHeaderDirs())
 					depPaths.Flags = append(depPaths.Flags, flags)
 					if depTag == genHeaderExportDepTag {
 						depPaths.ReexportedFlags = append(depPaths.ReexportedFlags, flags)
 						depPaths.ReexportedFlagsDeps = append(depPaths.ReexportedFlagsDeps,
-							genRule.GeneratedSourceFiles()...)
+							genRule.GeneratedDeps()...)
 						// Add these re-exported flags to help header-abi-dumper to infer the abi exported by a library.
 						c.sabi.Properties.ReexportedIncludeFlags = append(c.sabi.Properties.ReexportedIncludeFlags, flags)
 

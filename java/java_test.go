@@ -79,6 +79,8 @@ func testContext(config android.Config, bp string,
 	ctx.RegisterModuleType("java_genrule", android.ModuleFactoryAdaptor(genRuleFactory))
 	ctx.RegisterModuleType("filegroup", android.ModuleFactoryAdaptor(genrule.FileGroupFactory))
 	ctx.RegisterModuleType("genrule", android.ModuleFactoryAdaptor(genrule.GenRuleFactory))
+	ctx.RegisterModuleType("droiddoc", android.ModuleFactoryAdaptor(DroiddocFactory))
+	ctx.RegisterModuleType("droiddoc_host", android.ModuleFactoryAdaptor(DroiddocHostFactory))
 	ctx.PreArchMutators(android.RegisterPrebuiltsPreArchMutators)
 	ctx.PreArchMutators(android.RegisterPrebuiltsPostDepsMutators)
 	ctx.PreArchMutators(android.RegisterDefaultsPreArchMutators)
@@ -131,21 +133,25 @@ func testContext(config android.Config, bp string,
 	}
 
 	mockFS := map[string][]byte{
-		"Android.bp":  []byte(bp),
-		"a.java":      nil,
-		"b.java":      nil,
-		"c.java":      nil,
-		"b.kt":        nil,
-		"a.jar":       nil,
-		"b.jar":       nil,
-		"java-res/a":  nil,
-		"java-res/b":  nil,
-		"java-res2/a": nil,
+		"Android.bp":     []byte(bp),
+		"a.java":         nil,
+		"b.java":         nil,
+		"c.java":         nil,
+		"b.kt":           nil,
+		"a.jar":          nil,
+		"b.jar":          nil,
+		"java-res/a":     nil,
+		"java-res/b":     nil,
+		"java-res2/a":    nil,
+		"java-fg/a.java": nil,
+		"java-fg/b.java": nil,
+		"java-fg/c.java": nil,
 
 		"prebuilts/sdk/14/android.jar":                nil,
 		"prebuilts/sdk/14/framework.aidl":             nil,
 		"prebuilts/sdk/current/android.jar":           nil,
 		"prebuilts/sdk/current/framework.aidl":        nil,
+		"prebuilts/sdk/current/core.jar":              nil,
 		"prebuilts/sdk/system_current/android.jar":    nil,
 		"prebuilts/sdk/system_current/framework.aidl": nil,
 		"prebuilts/sdk/system_14/android.jar":         nil,
@@ -164,6 +170,11 @@ func testContext(config android.Config, bp string,
 
 		"jdk8/jre/lib/jce.jar": nil,
 		"jdk8/jre/lib/rt.jar":  nil,
+
+		"bar-doc/a.java":                 nil,
+		"bar-doc/b.java":                 nil,
+		"bar-doc/known_oj_tags.txt":      nil,
+		"external/doclava/templates-sdk": nil,
 	}
 
 	for k, v := range fs {
@@ -359,6 +370,14 @@ var classpathTestcases = []struct {
 		bootclasspath: []string{`""`},
 		system:        "bootclasspath", // special value to tell 1.9 test to expect bootclasspath
 		classpath:     []string{"prebuilts/sdk/test_current/android.jar"},
+	},
+	{
+
+		name:          "core_current",
+		properties:    `sdk_version: "core_current",`,
+		bootclasspath: []string{`""`},
+		system:        "bootclasspath", // special value to tell 1.9 test to expect bootclasspath
+		classpath:     []string{"prebuilts/sdk/current/core.jar"},
 	},
 	{
 
@@ -844,6 +863,36 @@ func TestSharding(t *testing.T) {
 	}
 }
 
+func TestDroiddoc(t *testing.T) {
+	ctx := testJava(t, `
+		droiddoc {
+		    name: "bar-doc",
+		    srcs: [
+		        "bar-doc/*.java",
+		    ],
+		    exclude_srcs: [
+		        "bar-doc/b.java"
+		    ],
+		    custom_template_dir: "external/doclava/templates-sdk",
+		    hdf: [
+		        "android.whichdoc offline",
+		    ],
+		    knowntags: [
+		        "bar-doc/known_oj_tags.txt",
+		    ],
+		    proofread_file: "libcore-proofread.txt",
+		    todo_file: "libcore-docs-todo.html",
+		    args: "-offlinemode -title \"libcore\"",
+		}
+		`)
+
+	stubsJar := filepath.Join(buildDir, ".intermediates", "bar-doc", "android_common", "bar-doc-stubs.jar")
+	barDoc := ctx.ModuleForTests("bar-doc", "android_common").Output("bar-doc-stubs.jar")
+	if stubsJar != barDoc.Output.String() {
+		t.Errorf("expected stubs Jar [%q], got %q", stubsJar, barDoc.Output.String())
+	}
+}
+
 func TestJarGenrules(t *testing.T) {
 	ctx := testJava(t, `
 		java_library {
@@ -895,6 +944,32 @@ func TestJarGenrules(t *testing.T) {
 		barCombined.Inputs[1].String() != jargen.Output.String() {
 		t.Errorf("bar combined jar inputs %v is not [%q, %q]",
 			barCombined.Inputs.Strings(), bar.Output.String(), jargen.Output.String())
+	}
+}
+
+func TestExcludeFileGroupInSrcs(t *testing.T) {
+	ctx := testJava(t, `
+		java_library {
+			name: "foo",
+			srcs: ["a.java", ":foo-srcs"],
+			exclude_srcs: ["a.java", ":foo-excludes"],
+		}
+
+		filegroup {
+			name: "foo-srcs",
+			srcs: ["java-fg/a.java", "java-fg/b.java", "java-fg/c.java"],
+		}
+
+		filegroup {
+			name: "foo-excludes",
+			srcs: ["java-fg/a.java", "java-fg/b.java"],
+		}
+	`)
+
+	javac := ctx.ModuleForTests("foo", "android_common").Rule("javac")
+
+	if len(javac.Inputs) != 1 || javac.Inputs[0].String() != "java-fg/c.java" {
+		t.Errorf(`foo inputs %v != ["java-fg/c.java"]`, javac.Inputs)
 	}
 }
 

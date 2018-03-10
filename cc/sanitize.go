@@ -38,7 +38,6 @@ var (
 		"-fsanitize-blacklist=external/compiler-rt/lib/cfi/cfi_blacklist.txt"}
 	cfiLdflags = []string{"-flto", "-fsanitize-cfi-cross-dso", "-fsanitize=cfi",
 		"-Wl,-plugin-opt,O1"}
-	cfiArflags         = []string{"--plugin ${config.ClangBin}/../lib64/LLVMgold.so"}
 	cfiExportsMapPath  = "build/soong/cc/config/cfi_exports.map"
 	cfiExportsMap      android.Path
 	cfiStaticLibsMutex sync.Mutex
@@ -401,7 +400,13 @@ func (sanitize *sanitize) flags(ctx ModuleContext, flags Flags) Flags {
 			flags.CFlags = append(flags.CFlags, "-fvisibility=default")
 		}
 		flags.LdFlags = append(flags.LdFlags, cfiLdflags...)
-		flags.ArFlags = append(flags.ArFlags, cfiArflags...)
+		if ctx.Device() {
+			// Work around a bug in Clang. The CFI sanitizer requires LTO, and when
+			// LTO is enabled, the Clang driver fails to enable emutls for Android.
+			// See b/72706604 or https://github.com/android-ndk/ndk/issues/498.
+			flags.LdFlags = append(flags.LdFlags, "-Wl,-plugin-opt,-emulated-tls")
+		}
+		flags.ArGoldPlugin = true
 		if Bool(sanitize.Properties.Sanitize.Diag.Cfi) {
 			diagSanitizers = append(diagSanitizers, "cfi")
 		}
@@ -409,6 +414,16 @@ func (sanitize *sanitize) flags(ctx ModuleContext, flags Flags) Flags {
 		if ctx.staticBinary() {
 			_, flags.CFlags = removeFromList("-fsanitize-cfi-cross-dso", flags.CFlags)
 			_, flags.LdFlags = removeFromList("-fsanitize-cfi-cross-dso", flags.LdFlags)
+		}
+
+		if flags.Sdclang {
+			_, flags.LdFlags = removeFromList("-Wl,-plugin-opt,O1", flags.LdFlags)
+			var found bool
+			if found, flags.LdFlags = removeFromList("${config.Arm64Ldflags}", flags.LdFlags); found {
+				flags.LdFlags = append(flags.LdFlags, "${config.SdclangArm64Ldflags}")
+			}
+			flags.CFlags = append(flags.CFlags, "-fuse-ld=qcld")
+			flags.LdFlags = append(flags.LdFlags, "-fuse-ld=qcld")
 		}
 	}
 

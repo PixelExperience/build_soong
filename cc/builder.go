@@ -172,7 +172,7 @@ var (
 		},
 		"windresCmd", "flags")
 
-	_ = pctx.SourcePathVariable("sAbiDumper", "prebuilts/build-tools/${config.HostPrebuiltTag}/bin/header-abi-dumper")
+	_ = pctx.SourcePathVariable("sAbiDumper", "prebuilts/clang-tools/${config.HostPrebuiltTag}/bin/header-abi-dumper")
 
 	// -w has been added since header-abi-dumper does not need to produce any sort of diagnostic information.
 	sAbiDump = pctx.AndroidStaticRule("sAbiDump",
@@ -182,7 +182,7 @@ var (
 		},
 		"cFlags", "exportDirs")
 
-	_ = pctx.SourcePathVariable("sAbiLinker", "prebuilts/build-tools/${config.HostPrebuiltTag}/bin/header-abi-linker")
+	_ = pctx.SourcePathVariable("sAbiLinker", "prebuilts/clang-tools/${config.HostPrebuiltTag}/bin/header-abi-linker")
 
 	sAbiLink = pctx.AndroidStaticRule("sAbiLink",
 		blueprint.RuleParams{
@@ -193,7 +193,7 @@ var (
 		},
 		"symbolFilter", "arch", "exportedHeaderFlags")
 
-	_ = pctx.SourcePathVariable("sAbiDiffer", "prebuilts/build-tools/${config.HostPrebuiltTag}/bin/header-abi-diff")
+	_ = pctx.SourcePathVariable("sAbiDiffer", "prebuilts/clang-tools/${config.HostPrebuiltTag}/bin/header-abi-diff")
 
 	sAbiDiff = pctx.AndroidRuleFunc("sAbiDiff",
 		func(config android.Config) (blueprint.RuleParams, error) {
@@ -249,13 +249,16 @@ type builderFlags struct {
 	rsFlags        string
 	toolchain      config.Toolchain
 	clang          bool
+	sdclang        bool
 	tidy           bool
 	coverage       bool
 	sAbiDump       bool
+	protoRoot      bool
 
 	systemIncludeFlags string
 
 	groupStaticLibs bool
+	arGoldPlugin    bool
 
 	stripKeepSymbols       bool
 	stripKeepMiniDebugInfo bool
@@ -425,8 +428,14 @@ func TransformSourceToObj(ctx android.ModuleContext, subdir string, srcFiles and
 
 		ccDesc := ccCmd
 
+		var extraFlags string
 		if flags.clang {
-			ccCmd = "${config.ClangBin}/" + ccCmd
+			if flags.sdclang {
+				ccCmd = "${config.SDClangBin}/" + ccCmd
+				extraFlags = " ${config.SDClangFlags}"
+			} else {
+				ccCmd = "${config.ClangBin}/" + ccCmd
+			}
 		} else {
 			ccCmd = gccCmd(flags.toolchain, ccCmd)
 		}
@@ -447,7 +456,7 @@ func TransformSourceToObj(ctx android.ModuleContext, subdir string, srcFiles and
 			Implicits:       cFlagsDeps,
 			OrderOnly:       pathDeps,
 			Args: map[string]string{
-				"cFlags": moduleCflags,
+				"cFlags": moduleCflags + extraFlags,
 				"ccCmd":  ccCmd,
 			},
 		})
@@ -511,6 +520,9 @@ func TransformObjToStaticLib(ctx android.ModuleContext, objFiles android.Paths,
 	arFlags := "crsD"
 	if !ctx.Darwin() {
 		arFlags += " -format=gnu"
+	}
+	if flags.arGoldPlugin {
+		arFlags += " --plugin ${config.LLVMGoldPlugin}"
 	}
 	if flags.arFlags != "" {
 		arFlags += " " + flags.arFlags
@@ -612,8 +624,14 @@ func TransformObjToDynamicBinary(ctx android.ModuleContext,
 	crtBegin, crtEnd android.OptionalPath, groupLate bool, flags builderFlags, outputFile android.WritablePath) {
 
 	var ldCmd string
+	var extraFlags string
 	if flags.clang {
-		ldCmd = "${config.ClangBin}/clang++"
+		if flags.sdclang {
+			ldCmd = "${config.SDClangBin}/clang++"
+			extraFlags = " ${config.SDClangFlags}"
+		} else {
+			ldCmd = "${config.ClangBin}/clang++"
+		}
 	} else {
 		ldCmd = gccCmd(flags.toolchain, "g++")
 	}
@@ -671,7 +689,7 @@ func TransformObjToDynamicBinary(ctx android.ModuleContext,
 			"ldCmd":    ldCmd,
 			"crtBegin": crtBegin.String(),
 			"libFlags": strings.Join(libFlagsList, " "),
-			"ldFlags":  flags.ldFlags,
+			"ldFlags":  flags.ldFlags + extraFlags,
 			"crtEnd":   crtEnd.String(),
 		},
 	})
@@ -760,8 +778,14 @@ func TransformObjsToObj(ctx android.ModuleContext, objFiles android.Paths,
 	flags builderFlags, outputFile android.WritablePath) {
 
 	var ldCmd string
+        var extraFlags string
 	if flags.clang {
-		ldCmd = "${config.ClangBin}/clang++"
+		if flags.sdclang {
+			ldCmd = "${config.SDClangBin}/clang++"
+			extraFlags = " ${config.SDClangFlags}"
+		} else {
+			ldCmd = "${config.ClangBin}/clang++"
+		}
 	} else {
 		ldCmd = gccCmd(flags.toolchain, "g++")
 	}
@@ -773,7 +797,7 @@ func TransformObjsToObj(ctx android.ModuleContext, objFiles android.Paths,
 		Inputs:      objFiles,
 		Args: map[string]string{
 			"ldCmd":   ldCmd,
-			"ldFlags": flags.ldFlags,
+			"ldFlags": flags.ldFlags + extraFlags,
 		},
 	})
 }

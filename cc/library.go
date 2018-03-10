@@ -476,6 +476,13 @@ func (library *libraryDecorator) linkerDeps(ctx DepsContext, deps Deps) Deps {
 		deps.SharedLibs = removeListFromList(deps.SharedLibs, library.baseLinker.Properties.Target.Vendor.Exclude_shared_libs)
 		deps.StaticLibs = removeListFromList(deps.StaticLibs, library.baseLinker.Properties.Target.Vendor.Exclude_static_libs)
 	}
+
+	android.ExtractSourceDeps(ctx, library.Properties.Version_script)
+	android.ExtractSourceDeps(ctx, library.Properties.Unexported_symbols_list)
+	android.ExtractSourceDeps(ctx, library.Properties.Force_symbols_not_weak_list)
+	android.ExtractSourceDeps(ctx, library.Properties.Force_symbols_weak_list)
+	android.ExtractSourceDeps(ctx, library.Properties.Target.Vendor.Version_script)
+
 	return deps
 }
 
@@ -507,12 +514,12 @@ func (library *libraryDecorator) linkShared(ctx ModuleContext,
 	var linkerDeps android.Paths
 	linkerDeps = append(linkerDeps, flags.LdFlagsDeps...)
 
-	versionScript := android.OptionalPathForModuleSrc(ctx, library.Properties.Version_script)
-	unexportedSymbols := android.OptionalPathForModuleSrc(ctx, library.Properties.Unexported_symbols_list)
-	forceNotWeakSymbols := android.OptionalPathForModuleSrc(ctx, library.Properties.Force_symbols_not_weak_list)
-	forceWeakSymbols := android.OptionalPathForModuleSrc(ctx, library.Properties.Force_symbols_weak_list)
+	versionScript := ctx.ExpandOptionalSource(library.Properties.Version_script, "version_script")
+	unexportedSymbols := ctx.ExpandOptionalSource(library.Properties.Unexported_symbols_list, "unexported_symbols_list")
+	forceNotWeakSymbols := ctx.ExpandOptionalSource(library.Properties.Force_symbols_not_weak_list, "force_symbols_not_weak_list")
+	forceWeakSymbols := ctx.ExpandOptionalSource(library.Properties.Force_symbols_weak_list, "force_symbols_weak_list")
 	if ctx.useVndk() && library.Properties.Target.Vendor.Version_script != nil {
-		versionScript = android.OptionalPathForModuleSrc(ctx, library.Properties.Target.Vendor.Version_script)
+		versionScript = ctx.ExpandOptionalSource(library.Properties.Target.Vendor.Version_script, "target.vendor.version_script")
 	}
 	if !ctx.Darwin() {
 		if versionScript.Valid() {
@@ -683,12 +690,13 @@ func (library *libraryDecorator) link(ctx ModuleContext,
 
 	if Bool(library.Properties.Proto.Export_proto_headers) {
 		if library.baseCompiler.hasSrcExt(".proto") {
-			flags := []string{
-				"-I" + android.ProtoSubDir(ctx).String(),
-				"-I" + android.ProtoDir(ctx).String(),
+			includes := []string{}
+			if flags.ProtoRoot {
+				includes = append(includes, "-I"+android.ProtoSubDir(ctx).String())
 			}
-			library.reexportFlags(flags)
-			library.reuseExportedFlags = append(library.reuseExportedFlags, flags...)
+			includes = append(includes, "-I"+android.ProtoDir(ctx).String())
+			library.reexportFlags(includes)
+			library.reuseExportedFlags = append(library.reuseExportedFlags, includes...)
 			library.reexportDeps(library.baseCompiler.pathDeps) // TODO: restrict to proto deps
 			library.reuseExportedDeps = append(library.reuseExportedDeps, library.baseCompiler.pathDeps...)
 		}
