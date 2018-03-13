@@ -43,6 +43,7 @@ func init() {
 type SourceFileGenerator interface {
 	GeneratedSourceFiles() android.Paths
 	GeneratedHeaderDirs() android.Paths
+	GeneratedDeps() android.Paths
 }
 
 type HostToolProvider interface {
@@ -107,14 +108,16 @@ type Module struct {
 	exportedIncludeDirs android.Paths
 
 	outputFiles android.Paths
+	outputDeps  android.Paths
 }
 
 type taskFunc func(ctx android.ModuleContext, rawCommand string, srcFiles android.Paths) generateTask
 
 type generateTask struct {
-	in  android.Paths
-	out android.WritablePaths
-	cmd string
+	in          android.Paths
+	out         android.WritablePaths
+	sandboxOuts []string
+	cmd         string
 }
 
 func (g *Module) GeneratedSourceFiles() android.Paths {
@@ -127,6 +130,10 @@ func (g *Module) Srcs() android.Paths {
 
 func (g *Module) GeneratedHeaderDirs() android.Paths {
 	return g.exportedIncludeDirs
+}
+
+func (g *Module) GeneratedDeps() android.Paths {
+	return g.outputDeps
 }
 
 func (g *Module) DepsMutator(ctx android.BottomUpMutatorContext) {
@@ -320,7 +327,7 @@ func (g *Module) generateSourceFile(ctx android.ModuleContext, task generateTask
 		Inputs:          task.in,
 		Implicits:       g.deps,
 		Args: map[string]string{
-			"allouts": strings.Join(task.out.Strings(), " "),
+			"allouts": strings.Join(task.sandboxOuts, " "),
 		},
 	}
 	if Bool(g.properties.Depfile) {
@@ -333,6 +340,7 @@ func (g *Module) generateSourceFile(ctx android.ModuleContext, task generateTask
 	for _, outputFile := range task.out {
 		g.outputFiles = append(g.outputFiles, outputFile)
 	}
+	g.outputDeps = append(g.outputDeps, task.out[0])
 }
 
 func generatorFactory(taskGenerator taskFunc, props ...interface{}) *Module {
@@ -346,23 +354,31 @@ func generatorFactory(taskGenerator taskFunc, props ...interface{}) *Module {
 	return module
 }
 
+// replace "out" with "__SBOX_OUT_DIR__/<the value of ${out}>"
+func pathToSandboxOut(path android.Path, genDir android.Path) string {
+	relOut, err := filepath.Rel(genDir.String(), path.String())
+	if err != nil {
+		panic(fmt.Sprintf("Could not make ${out} relative: %v", err))
+	}
+	return filepath.Join("__SBOX_OUT_DIR__", relOut)
+
+}
+
 func NewGenSrcs() *Module {
 	properties := &genSrcsProperties{}
 
 	taskGenerator := func(ctx android.ModuleContext, rawCommand string, srcFiles android.Paths) generateTask {
 		commands := []string{}
 		outFiles := android.WritablePaths{}
-		genPath := android.PathForModuleGen(ctx).String()
+		genDir := android.PathForModuleGen(ctx)
+		sandboxOuts := []string{}
 		for _, in := range srcFiles {
 			outFile := android.GenPathWithExt(ctx, "", in, String(properties.Output_extension))
 			outFiles = append(outFiles, outFile)
 
-			// replace "out" with "__SBOX_OUT_DIR__/<the value of ${out}>"
-			relOut, err := filepath.Rel(genPath, outFile.String())
-			if err != nil {
-				panic(fmt.Sprintf("Could not make ${out} relative: %v", err))
-			}
-			sandboxOutfile := filepath.Join("__SBOX_OUT_DIR__", relOut)
+			sandboxOutfile := pathToSandboxOut(outFile, genDir)
+			sandboxOuts = append(sandboxOuts, sandboxOutfile)
+
 			command, err := android.Expand(rawCommand, func(name string) (string, error) {
 				switch name {
 				case "in":
@@ -384,9 +400,10 @@ func NewGenSrcs() *Module {
 		fullCommand := strings.Join(commands, " && ")
 
 		return generateTask{
-			in:  srcFiles,
-			out: outFiles,
-			cmd: fullCommand,
+			in:          srcFiles,
+			out:         outFiles,
+			sandboxOuts: sandboxOuts,
+			cmd:         fullCommand,
 		}
 	}
 
@@ -409,13 +426,17 @@ func NewGenRule() *Module {
 
 	taskGenerator := func(ctx android.ModuleContext, rawCommand string, srcFiles android.Paths) generateTask {
 		outs := make(android.WritablePaths, len(properties.Out))
+		sandboxOuts := make([]string, len(properties.Out))
+		genDir := android.PathForModuleGen(ctx)
 		for i, out := range properties.Out {
 			outs[i] = android.PathForModuleGen(ctx, out)
+			sandboxOuts[i] = pathToSandboxOut(outs[i], genDir)
 		}
 		return generateTask{
-			in:  srcFiles,
-			out: outs,
-			cmd: rawCommand,
+			in:          srcFiles,
+			out:         outs,
+			sandboxOuts: sandboxOuts,
+			cmd:         rawCommand,
 		}
 	}
 

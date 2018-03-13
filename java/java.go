@@ -116,6 +116,9 @@ type CompilerProperties struct {
 	// The number of Java source entries each Javac instance can process
 	Javac_shard_size *int64
 
+	// Add host jdk tools.jar to bootclasspath
+	Use_tools_jar *bool
+
 	Openjdk9 struct {
 		// List of source files that should only be used when passing -source 1.9
 		Srcs []string
@@ -312,7 +315,7 @@ type sdkDep struct {
 
 func sdkStringToNumber(ctx android.BaseContext, v string) int {
 	switch v {
-	case "", "current", "system_current", "test_current":
+	case "", "current", "system_current", "test_current", "core_current":
 		return android.FutureApiLevel
 	default:
 		if i, err := strconv.Atoi(android.GetNumericSdkVersion(v)); err != nil {
@@ -358,19 +361,20 @@ func decodeSdkDep(ctx android.BaseContext, v string) sdkDep {
 	}
 
 	toFile := func(v string) sdkDep {
+		isCore := strings.HasPrefix(v, "core_")
+		if isCore {
+			v = strings.TrimPrefix(v, "core_")
+		}
 		dir := filepath.Join("prebuilts/sdk", v)
 		jar := filepath.Join(dir, "android.jar")
+		if isCore {
+			jar = filepath.Join(dir, "core.jar")
+		}
 		aidl := filepath.Join(dir, "framework.aidl")
-		jarPath := android.ExistentPathForSource(ctx, "sdkdir", jar)
-		aidlPath := android.ExistentPathForSource(ctx, "sdkdir", aidl)
+		jarPath := android.ExistentPathForSource(ctx, jar)
+		aidlPath := android.ExistentPathForSource(ctx, aidl)
 
 		if (!jarPath.Valid() || !aidlPath.Valid()) && ctx.Config().AllowMissingDependencies() {
-			if strings.Contains(v, "system_") {
-				return sdkDep{
-					invalidVersion: true,
-					module:         "system_sdk_v" + strings.Replace(v, "system_", "", 1),
-				}
-			}
 			return sdkDep{
 				invalidVersion: true,
 				module:         "sdk_v" + v,
@@ -462,6 +466,7 @@ func (j *Module) deps(ctx android.BottomUpMutatorContext) {
 	ctx.AddDependency(ctx.Module(), libTag, j.properties.Annotation_processors...)
 
 	android.ExtractSourcesDeps(ctx, j.properties.Srcs)
+	android.ExtractSourcesDeps(ctx, j.properties.Exclude_srcs)
 	android.ExtractSourcesDeps(ctx, j.properties.Java_resources)
 	android.ExtractSourceDeps(ctx, j.properties.Manifest)
 
@@ -525,7 +530,7 @@ func (j *Module) aidlFlags(ctx android.ModuleContext, aidlPreprocess android.Opt
 	flags = append(flags, android.JoinWithPrefix(j.exportAidlIncludeDirs.Strings(), "-I"))
 	flags = append(flags, android.JoinWithPrefix(aidlIncludes.Strings(), "-I"))
 	flags = append(flags, "-I"+android.PathForModuleSrc(ctx).String())
-	if src := android.ExistentPathForSource(ctx, "", ctx.ModuleDir(), "src"); src.Valid() {
+	if src := android.ExistentPathForSource(ctx, ctx.ModuleDir(), "src"); src.Valid() {
 		flags = append(flags, "-I"+src.String())
 	}
 
@@ -533,8 +538,8 @@ func (j *Module) aidlFlags(ctx android.ModuleContext, aidlPreprocess android.Opt
 }
 
 type deps struct {
-	classpath          android.Paths
-	bootClasspath      android.Paths
+	classpath          classpath
+	bootClasspath      classpath
 	staticJars         android.Paths
 	staticHeaderJars   android.Paths
 	staticJarResources android.Paths
@@ -550,6 +555,15 @@ func checkProducesJars(ctx android.ModuleContext, dep android.SourceFileProducer
 		if f.Ext() != ".jar" {
 			ctx.ModuleErrorf("genrule %q must generate files ending with .jar to be used as a libs or static_libs dependency",
 				ctx.OtherModuleName(dep.(blueprint.Module)))
+		}
+	}
+}
+
+func checkLinkType(ctx android.ModuleContext, from *Module, to *Library, tag dependencyTag) {
+	if strings.HasPrefix(String(from.deviceProperties.Sdk_version), "core_") {
+		if !strings.HasPrefix(String(to.deviceProperties.Sdk_version), "core_") {
+			ctx.ModuleErrorf("depends on other library %q using non-core Java APIs",
+				ctx.OtherModuleName(to))
 		}
 	}
 }
@@ -570,6 +584,9 @@ func (j *Module) collectDeps(ctx android.ModuleContext) deps {
 		otherName := ctx.OtherModuleName(module)
 		tag := ctx.OtherModuleDependencyTag(module)
 
+		if to, ok := module.(*Library); ok {
+			checkLinkType(ctx, j, to, tag.(dependencyTag))
+		}
 		switch dep := module.(type) {
 		case Dependency:
 			switch tag {
@@ -671,8 +688,8 @@ func (j *Module) collectBuilderFlags(ctx android.ModuleContext, deps deps) javaB
 	}
 
 	// classpath
-	flags.bootClasspath.AddPaths(deps.bootClasspath)
-	flags.classpath.AddPaths(deps.classpath)
+	flags.bootClasspath = append(flags.bootClasspath, deps.bootClasspath...)
+	flags.classpath = append(flags.classpath, deps.classpath...)
 
 	if len(flags.bootClasspath) == 0 && ctx.Host() && !ctx.Config().TargetOpenJDK9() &&
 		!Bool(j.properties.No_standard_libs) &&
@@ -694,6 +711,10 @@ func (j *Module) collectBuilderFlags(ctx android.ModuleContext, deps deps) javaB
 		flags.bootClasspath = append(flags.bootClasspath,
 			android.PathForSource(ctx, java8Home, "jre/lib/jce.jar"),
 			android.PathForSource(ctx, java8Home, "jre/lib/rt.jar"))
+		if Bool(j.properties.Use_tools_jar) {
+			flags.bootClasspath = append(flags.bootClasspath,
+				android.PathForSource(ctx, java8Home, "lib/tools.jar"))
+		}
 	}
 
 	// systemModules
@@ -737,6 +758,16 @@ func (j *Module) compile(ctx android.ModuleContext, extraSrcJars ...android.Path
 
 	jarName := ctx.ModuleName() + ".jar"
 
+	javaSrcFiles := srcFiles.FilterByExt(".java")
+	var uniqueSrcFiles android.Paths
+	set := make(map[string]bool)
+	for _, v := range javaSrcFiles {
+		if _, found := set[v.String()]; !found {
+			set[v.String()] = true
+			uniqueSrcFiles = append(uniqueSrcFiles, v)
+		}
+	}
+
 	if srcFiles.HasExt(".kt") {
 		// If there are kotlin files, compile them first but pass all the kotlin and java files
 		// kotlinc will use the java files to resolve types referenced by the kotlin files, but
@@ -747,11 +778,15 @@ func (j *Module) compile(ctx android.ModuleContext, extraSrcJars ...android.Path
 			flags.kotlincFlags += " -no-jdk"
 		}
 
+		var kotlinSrcFiles android.Paths
+		kotlinSrcFiles = append(kotlinSrcFiles, uniqueSrcFiles...)
+		kotlinSrcFiles = append(kotlinSrcFiles, srcFiles.FilterByExt(".kt")...)
+
 		flags.kotlincClasspath = append(flags.kotlincClasspath, deps.kotlinStdlib...)
 		flags.kotlincClasspath = append(flags.kotlincClasspath, deps.classpath...)
 
 		kotlinJar := android.PathForModuleOut(ctx, "kotlin", jarName)
-		TransformKotlinToClasses(ctx, kotlinJar, srcFiles, srcJars, flags)
+		TransformKotlinToClasses(ctx, kotlinJar, kotlinSrcFiles, srcJars, flags)
 		if ctx.Failed() {
 			return
 		}
@@ -761,16 +796,6 @@ func (j *Module) compile(ctx android.ModuleContext, extraSrcJars ...android.Path
 		// Jar kotlin classes into the final jar after javac
 		jars = append(jars, kotlinJar)
 		jars = append(jars, deps.kotlinStdlib...)
-	}
-
-	javaSrcFiles := srcFiles.FilterByExt(".java")
-	var uniqueSrcFiles android.Paths
-	set := make(map[string]bool)
-	for _, v := range javaSrcFiles {
-		if _, found := set[v.String()]; !found {
-			set[v.String()] = true
-			uniqueSrcFiles = append(uniqueSrcFiles, v)
-		}
 	}
 
 	// Store the list of .java files that was passed to javac
@@ -811,7 +836,7 @@ func (j *Module) compile(ctx android.ModuleContext, extraSrcJars ...android.Path
 		}
 
 		if enable_sharding {
-			flags.classpath.AddPaths([]android.Path{j.headerJarFile})
+			flags.classpath = append(flags.classpath, j.headerJarFile)
 			shardSize := int(*(j.properties.Javac_shard_size))
 			var shardSrcs []android.Paths
 			if len(uniqueSrcFiles) > 0 {
@@ -982,7 +1007,7 @@ func (j *Module) instrument(ctx android.ModuleContext, flags javaBuilderFlags,
 // modules targeting an unreleased SDK (meaning it does not yet have a number) it returns "10000".
 func (j *Module) minSdkVersionNumber(ctx android.ModuleContext) string {
 	switch String(j.deviceProperties.Sdk_version) {
-	case "", "current", "test_current", "system_current":
+	case "", "current", "test_current", "system_current", "core_current":
 		return strconv.Itoa(ctx.Config().DefaultAppTargetSdkInt())
 	default:
 		return android.GetNumericSdkVersion(String(j.deviceProperties.Sdk_version))
@@ -1227,15 +1252,6 @@ func ImportFactoryHost() android.Module {
 	return module
 }
 
-func inList(s string, l []string) bool {
-	for _, e := range l {
-		if e == s {
-			return true
-		}
-	}
-	return false
-}
-
 //
 // Defaults
 //
@@ -1270,3 +1286,4 @@ func DefaultsFactory(props ...interface{}) android.Module {
 
 var Bool = proptools.Bool
 var String = proptools.String
+var inList = android.InList

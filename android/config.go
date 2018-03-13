@@ -425,6 +425,14 @@ func (c *config) EmbeddedInMake() bool {
 	return c.inMake
 }
 
+func (c *config) BuildId() string {
+	return String(c.ProductVariables.BuildId)
+}
+
+func (c *config) BuildNumberFromFile() string {
+	return String(c.ProductVariables.BuildNumberFromFile)
+}
+
 // DeviceName returns the name of the current device target
 // TODO: take an AndroidModuleContext to select the device name for multi-device builds
 func (c *config) DeviceName() string {
@@ -708,6 +716,10 @@ func (c *deviceConfig) CoverageEnabledForPath(path string) bool {
 		}
 	}
 	return coverage
+}
+
+func (c *deviceConfig) PgoAdditionalProfileDirs() []string {
+	return c.config.ProductVariables.PgoAdditionalProfileDirs
 }
 
 func (c *config) IntegerOverflowDisabledForPath(path string) bool {

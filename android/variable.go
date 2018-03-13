@@ -119,6 +119,10 @@ type productVariables struct {
 	// Suffix to add to generated Makefiles
 	Make_suffix *string `json:",omitempty"`
 
+	BuildId             *string `json:",omitempty"`
+	BuildNumberFromFile *string `json:",omitempty"`
+	DateFromFile        *string `json:",omitempty"`
+
 	Platform_sdk_version              *int     `json:",omitempty"`
 	Platform_sdk_final                *bool    `json:",omitempty"`
 	Platform_version_active_codenames []string `json:",omitempty"`
@@ -215,6 +219,8 @@ type productVariables struct {
 	ExtraVndkVersions []string `json:",omitempty"`
 
 	NamespacesToExport []string `json:",omitempty"`
+
+	PgoAdditionalProfileDirs []string `json:",omitempty"`
 }
 
 func boolPtr(v bool) *bool {

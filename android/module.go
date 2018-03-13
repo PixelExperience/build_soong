@@ -110,8 +110,10 @@ type ModuleContext interface {
 
 	ExpandSources(srcFiles, excludes []string) Paths
 	ExpandSource(srcFile, prop string) Path
+	ExpandOptionalSource(srcFile *string, prop string) OptionalPath
 	ExpandSourcesSubDir(srcFiles, excludes []string, subDir string) Paths
 	Glob(globPattern string, excludes []string) Paths
+	GlobFiles(globPattern string, excludes []string) Paths
 
 	InstallExecutable(installPath OutputPath, name string, srcPath Path, deps ...Path) OutputPath
 	InstallFile(installPath OutputPath, name string, srcPath Path, deps ...Path) OutputPath
@@ -1162,18 +1164,40 @@ func (ctx *androidModuleContext) ExpandSource(srcFile, prop string) Path {
 	}
 }
 
+// Returns an optional single path expanded from globs and modules referenced using ":module" syntax if
+// the srcFile is non-nil.
+// ExtractSourceDeps must have already been called during the dependency resolution phase.
+func (ctx *androidModuleContext) ExpandOptionalSource(srcFile *string, prop string) OptionalPath {
+	if srcFile != nil {
+		return OptionalPathForPath(ctx.ExpandSource(*srcFile, prop))
+	}
+	return OptionalPath{}
+}
+
 func (ctx *androidModuleContext) ExpandSourcesSubDir(srcFiles, excludes []string, subDir string) Paths {
 	prefix := PathForModuleSrc(ctx).String()
 
-	for i, e := range excludes {
-		j := findStringInSlice(e, srcFiles)
-		if j != -1 {
-			srcFiles = append(srcFiles[:j], srcFiles[j+1:]...)
-		}
-
-		excludes[i] = filepath.Join(prefix, e)
+	var expandedExcludes []string
+	if excludes != nil {
+		expandedExcludes = make([]string, 0, len(excludes))
 	}
 
+	for _, e := range excludes {
+		if m := SrcIsModule(e); m != "" {
+			module := ctx.GetDirectDepWithTag(m, SourceDepTag)
+			if module == nil {
+				// Error will have been handled by ExtractSourcesDeps
+				continue
+			}
+			if srcProducer, ok := module.(SourceFileProducer); ok {
+				expandedExcludes = append(expandedExcludes, srcProducer.Srcs().Strings()...)
+			} else {
+				ctx.ModuleErrorf("srcs dependency %q is not a source file producing module", m)
+			}
+		} else {
+			expandedExcludes = append(expandedExcludes, filepath.Join(prefix, e))
+		}
+	}
 	expandedSrcFiles := make(Paths, 0, len(srcFiles))
 	for _, s := range srcFiles {
 		if m := SrcIsModule(s); m != "" {
@@ -1183,22 +1207,33 @@ func (ctx *androidModuleContext) ExpandSourcesSubDir(srcFiles, excludes []string
 				continue
 			}
 			if srcProducer, ok := module.(SourceFileProducer); ok {
-				expandedSrcFiles = append(expandedSrcFiles, srcProducer.Srcs()...)
+				moduleSrcs := srcProducer.Srcs()
+				for _, e := range expandedExcludes {
+					for j, ms := range moduleSrcs {
+						if ms.String() == e {
+							moduleSrcs = append(moduleSrcs[:j], moduleSrcs[j+1:]...)
+						}
+					}
+				}
+				expandedSrcFiles = append(expandedSrcFiles, moduleSrcs...)
 			} else {
 				ctx.ModuleErrorf("srcs dependency %q is not a source file producing module", m)
 			}
 		} else if pathtools.IsGlob(s) {
-			globbedSrcFiles := ctx.Glob(filepath.Join(prefix, s), excludes)
+			globbedSrcFiles := ctx.Glob(filepath.Join(prefix, s), expandedExcludes)
 			for i, s := range globbedSrcFiles {
 				globbedSrcFiles[i] = s.(ModuleSrcPath).WithSubDir(ctx, subDir)
 			}
 			expandedSrcFiles = append(expandedSrcFiles, globbedSrcFiles...)
 		} else {
-			s := PathForModuleSrc(ctx, s).WithSubDir(ctx, subDir)
-			expandedSrcFiles = append(expandedSrcFiles, s)
+			p := PathForModuleSrc(ctx, s).WithSubDir(ctx, subDir)
+			j := findStringInSlice(p.String(), expandedExcludes)
+			if j == -1 {
+				expandedSrcFiles = append(expandedSrcFiles, p)
+			}
+
 		}
 	}
-
 	return expandedSrcFiles
 }
 
@@ -1212,6 +1247,24 @@ func (ctx *androidModuleContext) Glob(globPattern string, excludes []string) Pat
 		ctx.ModuleErrorf("glob: %s", err.Error())
 	}
 	return pathsForModuleSrcFromFullPath(ctx, ret)
+}
+
+// glob only "files" under the directory relative to top of the source tree.
+func (ctx *androidModuleContext) GlobFiles(globPattern string, excludes []string) Paths {
+	paths, err := ctx.GlobWithDeps(globPattern, excludes)
+	if err != nil {
+		ctx.ModuleErrorf("glob: %s", err.Error())
+	}
+	var ret []Path
+	for _, p := range paths {
+		if isDir, err := ctx.Fs().IsDir(p); err != nil {
+			ctx.ModuleErrorf("error in IsDir(%s): %s", p, err.Error())
+			return nil
+		} else if !isDir {
+			ret = append(ret, PathForSource(ctx, p))
+		}
+	}
+	return ret
 }
 
 func init() {

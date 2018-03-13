@@ -27,18 +27,25 @@ var (
 	// some functions
 	profileUseOtherFlags = []string{"-Wno-backend-plugin"}
 
-	pgoProfileProjects = []string{
+	globalPgoProfileProjects = []string{
 		"toolchain/pgo-profiles",
 		"vendor/google_data/pgo-profiles",
 	}
 )
 
+const pgoProfileProjectsConfigKey = "PgoProfileProjects"
 const profileInstrumentFlag = "-fprofile-generate=/data/local/tmp"
 const profileSamplingFlag = "-gline-tables-only"
 const profileUseInstrumentFormat = "-fprofile-use=%s"
 const profileUseSamplingFormat = "-fprofile-sample-use=%s"
 
-func recordMissingProfileFile(ctx ModuleContext, missing string) {
+func getPgoProfileProjects(config android.DeviceConfig) []string {
+	return config.OnceStringSlice(pgoProfileProjectsConfigKey, func() []string {
+		return append(globalPgoProfileProjects, config.PgoAdditionalProfileDirs()...)
+	})
+}
+
+func recordMissingProfileFile(ctx BaseModuleContext, missing string) {
 	getNamedMapForConfig(ctx.Config(), modulesMissingProfileFile).Store(missing, true)
 }
 
@@ -56,6 +63,7 @@ type PgoProperties struct {
 
 	PgoPresent          bool `blueprint:"mutated"`
 	ShouldProfileModule bool `blueprint:"mutated"`
+	PgoCompile          bool `blueprint:"mutated"`
 }
 
 type pgo struct {
@@ -91,10 +99,10 @@ func (props *PgoProperties) addProfileGatherFlags(ctx ModuleContext, flags Flags
 	return flags
 }
 
-func (props *PgoProperties) getPgoProfileFile(ctx ModuleContext) android.OptionalPath {
-	// Test if the profile_file is present in any of the pgoProfileProjects
-	for _, profileProject := range pgoProfileProjects {
-		path := android.ExistentPathForSource(ctx, "", profileProject, *props.Pgo.Profile_file)
+func (props *PgoProperties) getPgoProfileFile(ctx BaseModuleContext) android.OptionalPath {
+	// Test if the profile_file is present in any of the PGO profile projects
+	for _, profileProject := range getPgoProfileProjects(ctx.DeviceConfig()) {
+		path := android.ExistentPathForSource(ctx, profileProject, *props.Pgo.Profile_file)
 		if path.Valid() {
 			return path
 		}
@@ -223,6 +231,12 @@ func (pgo *pgo) begin(ctx BaseModuleContext) {
 				pgo.Properties.ShouldProfileModule = true
 				break
 			}
+		}
+	}
+
+	if !ctx.Config().IsEnvTrue("ANDROID_PGO_NO_PROFILE_USE") {
+		if profileFile := pgo.Properties.getPgoProfileFile(ctx); profileFile.Valid() {
+			pgo.Properties.PgoCompile = true
 		}
 	}
 }
