@@ -18,48 +18,80 @@ import (
 	"debug/macho"
 	"fmt"
 	"io"
+	"sort"
+	"strings"
 )
 
-func findMachoSymbol(r io.ReaderAt, symbolName string) (uint64, uint64, error) {
+func machoSymbolsFromFile(r io.ReaderAt) (*File, error) {
 	machoFile, err := macho.NewFile(r)
 	if err != nil {
-		return maxUint64, maxUint64, cantParseError{err}
+		return nil, cantParseError{err}
 	}
 
-	// TODO(ccross): why?
-	symbolName = "_" + symbolName
-
-	for i, symbol := range machoFile.Symtab.Syms {
-		if symbol.Sect == 0 {
-			continue
-		}
-		if symbol.Name == symbolName {
-			var nextSymbol *macho.Symbol
-			if i+1 < len(machoFile.Symtab.Syms) {
-				nextSymbol = &machoFile.Symtab.Syms[i+1]
-			}
-			return calculateMachoSymbolOffset(machoFile, symbol, nextSymbol)
-		}
-	}
-
-	return maxUint64, maxUint64, fmt.Errorf("symbol not found")
+	return extractMachoSymbols(machoFile)
 }
 
-func calculateMachoSymbolOffset(file *macho.File, symbol macho.Symbol, nextSymbol *macho.Symbol) (uint64, uint64, error) {
-	section := file.Sections[symbol.Sect-1]
+func extractMachoSymbols(machoFile *macho.File) (*File, error) {
+	symbols := machoFile.Symtab.Syms
+	sort.SliceStable(symbols, func(i, j int) bool {
+		if symbols[i].Sect != symbols[j].Sect {
+			return symbols[i].Sect < symbols[j].Sect
+		}
+		return symbols[i].Value < symbols[j].Value
+	})
 
-	var end uint64
-	if nextSymbol != nil && nextSymbol.Sect != symbol.Sect {
-		nextSymbol = nil
+	file := &File{}
+
+	for _, section := range machoFile.Sections {
+		file.Sections = append(file.Sections, &Section{
+			Name:   section.Name,
+			Addr:   section.Addr,
+			Offset: uint64(section.Offset),
+			Size:   section.Size,
+		})
 	}
-	if nextSymbol != nil {
-		end = nextSymbol.Value
-	} else {
-		end = section.Addr + section.Size
+
+	for _, symbol := range symbols {
+		if symbol.Sect > 0 {
+			section := file.Sections[symbol.Sect-1]
+			file.Symbols = append(file.Symbols, &Symbol{
+				// symbols in macho files seem to be prefixed with an underscore
+				Name: strings.TrimPrefix(symbol.Name, "_"),
+				// MachO symbol value is virtual address of the symbol, convert it to offset into the section.
+				Addr: symbol.Value - section.Addr,
+				// MachO symbols don't have size information.
+				Size:    0,
+				Section: section,
+			})
+		}
 	}
 
-	size := end - symbol.Value - 1
-	offset := uint64(section.Offset) + (symbol.Value - section.Addr)
+	return file, nil
+}
 
-	return offset, size, nil
+func dumpMachoSymbols(r io.ReaderAt) error {
+	machoFile, err := macho.NewFile(r)
+	if err != nil {
+		return cantParseError{err}
+	}
+
+	fmt.Println("&macho.File{")
+
+	fmt.Println("\tSections: []*macho.Section{")
+	for _, section := range machoFile.Sections {
+		fmt.Printf("\t\t&macho.Section{SectionHeader: %#v},\n", section.SectionHeader)
+	}
+	fmt.Println("\t},")
+
+	fmt.Println("\tSymtab: &macho.Symtab{")
+	fmt.Println("\t\tSyms: []macho.Symbol{")
+	for _, symbol := range machoFile.Symtab.Syms {
+		fmt.Printf("\t\t\t%#v,\n", symbol)
+	}
+	fmt.Println("\t\t},")
+	fmt.Println("\t},")
+
+	fmt.Println("}")
+
+	return nil
 }

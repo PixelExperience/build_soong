@@ -19,49 +19,84 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strings"
 )
 
-func findPESymbol(r io.ReaderAt, symbolName string) (uint64, uint64, error) {
+func peSymbolsFromFile(r io.ReaderAt) (*File, error) {
 	peFile, err := pe.NewFile(r)
 	if err != nil {
-		return maxUint64, maxUint64, cantParseError{err}
+		return nil, cantParseError{err}
 	}
 
-	sort.Slice(peFile.Symbols, func(i, j int) bool {
-		if peFile.Symbols[i].SectionNumber != peFile.Symbols[j].SectionNumber {
-			return peFile.Symbols[i].SectionNumber < peFile.Symbols[j].SectionNumber
-		}
-		return peFile.Symbols[i].Value < peFile.Symbols[j].Value
-	})
-
-	for i, symbol := range peFile.Symbols {
-		if symbol.Name == symbolName {
-			var nextSymbol *pe.Symbol
-			if i+1 < len(peFile.Symbols) {
-				nextSymbol = peFile.Symbols[i+1]
-			}
-			return calculatePESymbolOffset(peFile, symbol, nextSymbol)
-		}
-	}
-
-	return maxUint64, maxUint64, fmt.Errorf("symbol not found")
+	return extractPESymbols(peFile)
 }
 
-func calculatePESymbolOffset(file *pe.File, symbol *pe.Symbol, nextSymbol *pe.Symbol) (uint64, uint64, error) {
-	section := file.Sections[symbol.SectionNumber-1]
-
-	var end uint32
-	if nextSymbol != nil && nextSymbol.SectionNumber != symbol.SectionNumber {
-		nextSymbol = nil
-	}
-	if nextSymbol != nil {
-		end = nextSymbol.Value
-	} else {
-		end = section.Size
+func extractPESymbols(peFile *pe.File) (*File, error) {
+	var prefix string
+	if peFile.FileHeader.Machine == pe.IMAGE_FILE_MACHINE_I386 {
+		// symbols in win32 exes seem to be prefixed with an underscore
+		prefix = "_"
 	}
 
-	size := end - symbol.Value - 1
-	offset := section.Offset + symbol.Value
+	symbols := peFile.Symbols
+	sort.SliceStable(symbols, func(i, j int) bool {
+		if symbols[i].SectionNumber != symbols[j].SectionNumber {
+			return symbols[i].SectionNumber < symbols[j].SectionNumber
+		}
+		return symbols[i].Value < symbols[j].Value
+	})
 
-	return uint64(offset), uint64(size), nil
+	file := &File{}
+
+	for _, section := range peFile.Sections {
+		file.Sections = append(file.Sections, &Section{
+			Name:   section.Name,
+			Addr:   uint64(section.VirtualAddress),
+			Offset: uint64(section.Offset),
+			Size:   uint64(section.VirtualSize),
+		})
+	}
+
+	for _, symbol := range symbols {
+		if symbol.SectionNumber > 0 {
+			file.Symbols = append(file.Symbols, &Symbol{
+				Name: strings.TrimPrefix(symbol.Name, prefix),
+				// PE symbol value is the offset of the symbol into the section
+				Addr: uint64(symbol.Value),
+				// PE symbols don't have size information
+				Size:    0,
+				Section: file.Sections[symbol.SectionNumber-1],
+			})
+		}
+	}
+
+	return file, nil
+}
+
+func dumpPESymbols(r io.ReaderAt) error {
+	peFile, err := pe.NewFile(r)
+	if err != nil {
+		return cantParseError{err}
+	}
+
+	fmt.Println("&pe.File{")
+	fmt.Println("\tFileHeader: pe.FileHeader{")
+	fmt.Printf("\t\tMachine: %#v,\n", peFile.FileHeader.Machine)
+	fmt.Println("\t},")
+
+	fmt.Println("\tSections: []*pe.Section{")
+	for _, section := range peFile.Sections {
+		fmt.Printf("\t\t&pe.Section{SectionHeader: %#v},\n", section.SectionHeader)
+	}
+	fmt.Println("\t},")
+
+	fmt.Println("\tSymbols: []*pe.Symbol{")
+	for _, symbol := range peFile.Symbols {
+		fmt.Printf("\t\t%#v,\n", symbol)
+	}
+	fmt.Println("\t},")
+
+	fmt.Println("}")
+
+	return nil
 }
