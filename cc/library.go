@@ -532,6 +532,7 @@ func (library *libraryDecorator) linkShared(ctx ModuleContext,
 			flags.LdFlags = append(flags.LdFlags, "-Wl,--version-script,"+versionScript.String())
 			linkerDeps = append(linkerDeps, versionScript.Path())
 			if library.sanitize.isSanitizerEnabled(cfi) {
+				cfiExportsMap := android.PathForSource(ctx, cfiExportsMapPath)
 				flags.LdFlags = append(flags.LdFlags, "-Wl,--version-script,"+cfiExportsMap.String())
 				linkerDeps = append(linkerDeps, cfiExportsMap)
 			}
@@ -642,8 +643,8 @@ func (library *libraryDecorator) linkShared(ctx ModuleContext,
 func (library *libraryDecorator) linkSAbiDumpFiles(ctx ModuleContext, objs Objects, fileName string, soFile android.Path) {
 	//Also take into account object re-use.
 	if len(objs.sAbiDumpFiles) > 0 && ctx.createVndkSourceAbiDump() {
-		vndkVersion := "current"
-		if ver := ctx.DeviceConfig().VndkVersion(); ver != "" {
+		vndkVersion := ctx.DeviceConfig().PlatformVndkVersion()
+		if ver := ctx.DeviceConfig().VndkVersion(); ver != "" && ver != "current" {
 			vndkVersion = ver
 		}
 
