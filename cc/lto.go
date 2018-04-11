@@ -94,6 +94,15 @@ func (lto *lto) flags(ctx BaseModuleContext, flags Flags) Flags {
 			flags.LdFlags = append(flags.LdFlags, "-Wl,-plugin-opt,-inline-threshold=0")
 			flags.LdFlags = append(flags.LdFlags, "-Wl,-plugin-opt,-unroll-threshold=0")
 		}
+
+		if flags.Sdclang {
+			var found bool
+			if found, flags.LdFlags = removeFromList("${config.Arm64Ldflags}", flags.LdFlags); found {
+				flags.LdFlags = append(flags.LdFlags, "${config.SdclangArm64Ldflags}")
+			}
+			flags.CFlags = append(flags.CFlags, "-fuse-ld=qcld")
+			flags.LdFlags = append(flags.LdFlags, "-fuse-ld=qcld")
+		}
 	}
 	return flags
 }
