@@ -188,26 +188,26 @@ func init() {
 	setSdclangVars()
 
 	pctx.SourcePathVariable("ClangDefaultBase", ClangDefaultBase)
-	pctx.VariableFunc("ClangBase", func(config android.Config) (string, error) {
-		if override := config.Getenv("LLVM_PREBUILTS_BASE"); override != "" {
-			return override, nil
+	pctx.VariableFunc("ClangBase", func(ctx android.PackageVarContext) string {
+		if override := ctx.Config().Getenv("LLVM_PREBUILTS_BASE"); override != "" {
+			return override
 		}
-		return "${ClangDefaultBase}", nil
+		return "${ClangDefaultBase}"
 	})
-	pctx.VariableFunc("ClangVersion", func(config android.Config) (string, error) {
-		if override := config.Getenv("LLVM_PREBUILTS_VERSION"); override != "" {
-			return override, nil
+	pctx.VariableFunc("ClangVersion", func(ctx android.PackageVarContext) string {
+		if override := ctx.Config().Getenv("LLVM_PREBUILTS_VERSION"); override != "" {
+			return override
 		}
-		return ClangDefaultVersion, nil
+		return ClangDefaultVersion
 	})
 	pctx.StaticVariable("ClangPath", "${ClangBase}/${HostPrebuiltTag}/${ClangVersion}")
 	pctx.StaticVariable("ClangBin", "${ClangPath}/bin")
 
-	pctx.VariableFunc("ClangShortVersion", func(config android.Config) (string, error) {
-		if override := config.Getenv("LLVM_RELEASE_VERSION"); override != "" {
-			return override, nil
+	pctx.VariableFunc("ClangShortVersion", func(ctx android.PackageVarContext) string {
+		if override := ctx.Config().Getenv("LLVM_RELEASE_VERSION"); override != "" {
+			return override
 		}
-		return ClangDefaultShortVersion, nil
+		return ClangDefaultShortVersion
 	})
 	pctx.StaticVariable("ClangAsanLibDir", "${ClangBase}/linux-x86/${ClangVersion}/lib64/clang/${ClangShortVersion}/lib/linux")
 	if runtime.GOOS == "darwin" {
@@ -230,11 +230,11 @@ func init() {
 			"frameworks/rs/script_api/include",
 		})
 
-	pctx.VariableFunc("CcWrapper", func(config android.Config) (string, error) {
-		if override := config.Getenv("CC_WRAPPER"); override != "" {
-			return override + " ", nil
+	pctx.VariableFunc("CcWrapper", func(ctx android.PackageVarContext) string {
+		if override := ctx.Config().Getenv("CC_WRAPPER"); override != "" {
+			return override + " "
 		}
-		return "", nil
+		return ""
 	})
 }
 
@@ -364,35 +364,35 @@ func setSdclangVars() {
 	}
 
 	// Override SDCLANG_PATH if the variable is set in the environment
-	pctx.VariableFunc("SDClangBin", func(config android.Config) (string, error) {
-		if override := config.Getenv("SDCLANG_PATH"); override != "" {
-			return override, nil
+	pctx.VariableFunc("SDClangBin", func(ctx android.PackageVarContext) string {
+		if override := ctx.Config().Getenv("SDCLANG_PATH"); override != "" {
+			return override
 		}
-		return sdclangPath, nil
+		return sdclangPath
 	})
 
 	// Override SDCLANG_PATH_2 if the variable is set in the environment
-	pctx.VariableFunc("SDClangBin2", func(config android.Config) (string, error) {
-		if override := config.Getenv("SDCLANG_PATH_2"); override != "" {
-			return override, nil
+	pctx.VariableFunc("SDClangBin2", func(ctx android.PackageVarContext) string {
+		if override := ctx.Config().Getenv("SDCLANG_PATH_2"); override != "" {
+			return override
 		}
-		return sdclangPath2, nil
+		return sdclangPath2
 	})
 
 	// Override SDCLANG_COMMON_FLAGS if the variable is set in the environment
-	pctx.VariableFunc("SDClangFlags", func(config android.Config) (string, error) {
-		if override := config.Getenv("SDCLANG_COMMON_FLAGS"); override != "" {
-			return override, nil
+	pctx.VariableFunc("SDClangFlags", func(ctx android.PackageVarContext) string {
+		if override := ctx.Config().Getenv("SDCLANG_COMMON_FLAGS"); override != "" {
+			return override
 		}
-		return sdclangAEFlag + " " + sdclangFlags, nil
+		return sdclangAEFlag + " " + sdclangFlags
 	})
 
 	// Override SDCLANG_COMMON_FLAGS_2 if the variable is set in the environment
-	pctx.VariableFunc("SDClangFlags2", func(config android.Config) (string, error) {
-		if override := config.Getenv("SDCLANG_COMMON_FLAGS_2"); override != "" {
-			return override, nil
+	pctx.VariableFunc("SDClangFlags2", func(ctx android.PackageVarContext) string {
+		if override := ctx.Config().Getenv("SDCLANG_COMMON_FLAGS_2"); override != "" {
+			return override
 		}
-		return sdclangAEFlag + " " + sdclangFlags2, nil
+		return sdclangAEFlag + " " + sdclangFlags2
 	})
 }
 
