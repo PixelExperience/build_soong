@@ -359,3 +359,10 @@ func cleanEmptyDirs(ctx Context, dir string) {
 	// Try and delete empty parent directories too.
 	cleanEmptyDirs(ctx, filepath.Dir(dir))
 }
+
+// Remove everything relevant for a clean ota package
+func deviceClean(ctx Context, config Config, what int) {
+	productOutPath := config.ProductOut()
+	removeGlobs(ctx, productOutPath)
+	ctx.Println(productOutPath, "removed.")
+}

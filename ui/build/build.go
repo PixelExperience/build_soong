@@ -291,6 +291,9 @@ func Build(ctx Context, config Config) {
 		dataClean(ctx, config)
 		ctx.Println("Deleted data files.")
 		return
+	} else if inList("deviceclean", config.Arguments()) {
+		deviceClean(ctx, config, what)
+		return
 	}
 
 	if what&RunSoong != 0 {
