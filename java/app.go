@@ -283,7 +283,7 @@ func (a *AndroidApp) aapt2Flags(ctx android.ModuleContext) (flags []string, deps
 	sdkVersion := String(a.deviceProperties.Sdk_version)
 	switch sdkVersion {
 	case "", "current", "system_current", "test_current":
-		sdkVersion = proptools.NinjaEscape([]string{ctx.Config().AppsDefaultVersionName()})[0]
+		sdkVersion = proptools.NinjaEscape([]string{ctx.Config().DefaultAppTargetSdk()})[0]
 	}
 
 	linkFlags = append(linkFlags, "--min-sdk-version "+sdkVersion)
@@ -310,7 +310,16 @@ func (a *AndroidApp) aapt2Flags(ctx android.ModuleContext) (flags []string, deps
 	}
 
 	if !hasVersionName {
-		versionName := proptools.NinjaEscape([]string{ctx.Config().AppsDefaultVersionName()})[0]
+		var versionName string
+		if ctx.ModuleName() == "framework-res" {
+			// Some builds set AppsDefaultVersionName() to include the build number ("O-123456").  aapt2 copies the
+			// version name of framework-res into app manifests as compileSdkVersionCodename, which confuses things
+			// if it contains the build number.  Use the DefaultAppTargetSdk instead.
+			versionName = ctx.Config().DefaultAppTargetSdk()
+		} else {
+			versionName = ctx.Config().AppsDefaultVersionName()
+		}
+		versionName = proptools.NinjaEscape([]string{versionName})[0]
 		linkFlags = append(linkFlags, "--version-name ", versionName)
 	}
 
@@ -362,15 +371,7 @@ func overlayResourceGlob(ctx android.ModuleContext, dir android.Path) (res []glo
 	overlayData := ctx.Config().Get(overlayDataKey).([]overlayGlobResult)
 
 	// Runtime resource overlays (RRO) may be turned on by the product config for some modules
-	rroEnabled := false
-	enforceRROTargets := ctx.Config().ProductVariables.EnforceRROTargets
-	if enforceRROTargets != nil {
-		if len(*enforceRROTargets) == 1 && (*enforceRROTargets)[0] == "*" {
-			rroEnabled = true
-		} else if inList(ctx.ModuleName(), *enforceRROTargets) {
-			rroEnabled = true
-		}
-	}
+	rroEnabled := ctx.Config().EnforceRROForModule(ctx.ModuleName())
 
 	for _, data := range overlayData {
 		files := data.paths.PathsInDirectory(filepath.Join(data.dir, dir.String()))
@@ -400,13 +401,6 @@ func OverlaySingletonFactory() android.Singleton {
 type overlaySingleton struct{}
 
 func (overlaySingleton) GenerateBuildActions(ctx android.SingletonContext) {
-
-	// Specific overlays may be excluded from Runtime Resource Overlays by the product config
-	var rroExcludedOverlays []string
-	if ctx.Config().ProductVariables.EnforceRROExcludedOverlays != nil {
-		rroExcludedOverlays = *ctx.Config().ProductVariables.EnforceRROExcludedOverlays
-	}
-
 	var overlayData []overlayGlobResult
 	overlayDirs := ctx.Config().ResourceOverlays()
 	for i := range overlayDirs {
@@ -417,11 +411,8 @@ func (overlaySingleton) GenerateBuildActions(ctx android.SingletonContext) {
 		result.dir = overlay
 
 		// Mark overlays that will not have Runtime Resource Overlays enforced on them
-		for _, exclude := range rroExcludedOverlays {
-			if strings.HasPrefix(overlay, exclude) {
-				result.excludeFromRRO = true
-			}
-		}
+		// based on the product config
+		result.excludeFromRRO = ctx.Config().EnforceRROExcludedOverlay(overlay)
 
 		files, err := ctx.GlobWithDeps(filepath.Join(overlay, "**/*"), aaptIgnoreFilenames)
 		if err != nil {
