@@ -543,13 +543,8 @@ func (ctx *moduleContextImpl) isVndkExt() bool {
 
 // Create source abi dumps if the module belongs to the list of VndkLibraries.
 func (ctx *moduleContextImpl) createVndkSourceAbiDump() bool {
-<<<<<<< HEAD
-	skipAbiChecks := true //ctx.ctx.Config().IsEnvTrue("SKIP_ABI_CHECKS")
-	isUnsanitizedVariant := true
-=======
 	skipAbiChecks := ctx.ctx.Config().IsEnvTrue("SKIP_ABI_CHECKS")
 	isVariantOnProductionDevice := true
->>>>>>> origin/p-fs-release
 	sanitize := ctx.mod.sanitize
 	if sanitize != nil {
 		isVariantOnProductionDevice = sanitize.isVariantOnProductionDevice()
