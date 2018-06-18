@@ -550,7 +550,7 @@ func (ctx *moduleContextImpl) createVndkSourceAbiDump() bool {
 		isVariantOnProductionDevice = sanitize.isVariantOnProductionDevice()
 	}
 	vendorAvailable := Bool(ctx.mod.VendorProperties.Vendor_available)
-	return !skipAbiChecks && isVariantOnProductionDevice && ctx.ctx.Device() && ((ctx.useVndk() && ctx.isVndk() && (vendorAvailable || ctx.isVndkExt())) || inList(ctx.baseModuleName(), llndkLibraries)) && ctx.baseModuleName() != "libstagefright_foundation"
+	return !skipAbiChecks && isVariantOnProductionDevice && ctx.ctx.Device() && ((ctx.useVndk() && ctx.isVndk() && (vendorAvailable || ctx.isVndkExt())) || inList(ctx.baseModuleName(), llndkLibraries))
 }
 
 func (ctx *moduleContextImpl) selectedStl() string {
