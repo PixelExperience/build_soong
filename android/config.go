@@ -777,7 +777,7 @@ func (c *deviceConfig) DeviceKernelHeaderDirs() []string {
 }
 
 func (c *deviceConfig) SpecificCameraParametersLibrary() string {
-	return String(c.config.productVariables.Lineage.Specific_camera_parameter_library)
+	return String(c.config.productVariables.Aosp.Specific_camera_parameter_library)
 }
 
 func (c *deviceConfig) NativeCoverageEnabled() bool {
