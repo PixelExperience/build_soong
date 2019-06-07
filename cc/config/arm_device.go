@@ -115,6 +115,16 @@ var (
 			// better solution comes around. See Bug 27340895
 			"-D__ARM_FEATURE_LPAE=1",
 		},
+		"kryo300": []string{
+			// Adding this line just to use kryo300 in both ABIs
+			"-mcpu=cortex-a55",
+			"-mfpu=neon-fp-armv8",
+			// Fake an ARM compiler flag as these processors support LPAE which GCC/clang
+			// don't advertise.
+			// TODO This is a hack and we need to add it for each processor that supports LPAE until some
+			// better solution comes around. See Bug 27340895
+			"-D__ARM_FEATURE_LPAE=1",
+		},
 		"krait": []string{
 			"-mcpu=cortex-a15",
 			"-mfpu=neon-vfpv4",
