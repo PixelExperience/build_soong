@@ -59,22 +59,19 @@ type smartStatusOutput struct {
 // current build status similarly to Ninja's built-in terminal
 // output.
 func NewSmartStatusOutput(w io.Writer, formatter formatter) status.StatusOutput {
+	tableHeight, _ := strconv.Atoi(os.Getenv(tableHeightEnVar))
+
 	s := &smartStatusOutput{
 		writer:    w,
 		formatter: formatter,
 
 		haveBlankLine: true,
 
-		tableMode: true,
+		tableMode:            tableHeight > 0,
+		requestedTableHeight: tableHeight,
 
 		done:     make(chan bool),
 		sigwinch: make(chan os.Signal),
-	}
-
-	if env, ok := os.LookupEnv(tableHeightEnVar); ok {
-		h, _ := strconv.Atoi(env)
-		s.tableMode = h > 0
-		s.requestedTableHeight = h
 	}
 
 	s.updateTermSize()
@@ -300,14 +297,6 @@ func (s *smartStatusOutput) updateTermSize() {
 
 		if s.tableMode {
 			tableHeight := s.requestedTableHeight
-			if tableHeight == 0 {
-				tableHeight = s.termHeight / 4
-				if tableHeight < 1 {
-					tableHeight = 1
-				} else if tableHeight > 10 {
-					tableHeight = 10
-				}
-			}
 			if tableHeight > s.termHeight-1 {
 				tableHeight = s.termHeight - 1
 			}
