@@ -23,12 +23,14 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/google/blueprint"
 	"github.com/google/blueprint/pathtools"
 	"github.com/google/blueprint/proptools"
 
 	"android/soong/android"
+	"android/soong/dexpreopt"
 	"android/soong/java/config"
 	"android/soong/tradefed"
 )
@@ -37,14 +39,7 @@ func init() {
 	RegisterJavaBuildComponents(android.InitRegistrationContext)
 
 	// Register sdk member types.
-	android.RegisterSdkMemberType(&headerLibrarySdkMemberType{
-		librarySdkMemberType{
-			android.SdkMemberTypeBase{
-				PropertyName: "java_header_libs",
-				SupportsSdk:  true,
-			},
-		},
-	})
+	android.RegisterSdkMemberType(javaHeaderLibsSdkMemberType)
 
 	android.RegisterSdkMemberType(&implLibrarySdkMemberType{
 		librarySdkMemberType{
@@ -59,6 +54,8 @@ func init() {
 			PropertyName: "java_tests",
 		},
 	})
+
+	android.PostDepsMutators(RegisterPostDepsMutators)
 }
 
 func RegisterJavaBuildComponents(ctx android.RegistrationContext) {
@@ -79,8 +76,50 @@ func RegisterJavaBuildComponents(ctx android.RegistrationContext) {
 	ctx.RegisterModuleType("java_host_for_device", HostForDeviceFactory)
 	ctx.RegisterModuleType("dex_import", DexImportFactory)
 
+	ctx.FinalDepsMutators(func(ctx android.RegisterMutatorsContext) {
+		ctx.BottomUp("dexpreopt_tool_deps", dexpreoptToolDepsMutator).Parallel()
+	})
+
 	ctx.RegisterSingletonType("logtags", LogtagsSingleton)
 	ctx.RegisterSingletonType("kythe_java_extract", kytheExtractJavaFactory)
+}
+
+func RegisterPostDepsMutators(ctx android.RegisterMutatorsContext) {
+	ctx.BottomUp("ordered_system_server_jars", systemServerJarsDepsMutator)
+}
+
+var (
+	dexpreoptedSystemServerJarsKey  = android.NewOnceKey("dexpreoptedSystemServerJars")
+	dexpreoptedSystemServerJarsLock sync.Mutex
+)
+
+func DexpreoptedSystemServerJars(config android.Config) *[]string {
+	return config.Once(dexpreoptedSystemServerJarsKey, func() interface{} {
+		return &[]string{}
+	}).(*[]string)
+}
+
+// A PostDepsMutator pass that enforces total order on non-updatable system server jars. A total
+// order is neededed because such jars must be dexpreopted together (each jar on the list must have
+// all preceding jars in its class loader context). The total order must be compatible with the
+// partial order imposed by genuine dependencies between system server jars (which is not always
+// respected by the PRODUCT_SYSTEM_SERVER_JARS variable).
+//
+// An earlier mutator pass creates genuine dependencies, and this pass traverses the jars in that
+// order (which is partial and non-deterministic). This pass adds additional dependencies between
+// jars, making the order total and deterministic. It also constructs a global ordered list.
+func systemServerJarsDepsMutator(ctx android.BottomUpMutatorContext) {
+	jars := dexpreopt.NonUpdatableSystemServerJars(ctx, dexpreopt.GetGlobalConfig(ctx))
+	name := ctx.ModuleName()
+	if android.InList(name, jars) {
+		dexpreoptedSystemServerJarsLock.Lock()
+		defer dexpreoptedSystemServerJarsLock.Unlock()
+		jars := DexpreoptedSystemServerJars(ctx.Config())
+		for _, dep := range *jars {
+			ctx.AddDependency(ctx.Module(), dexpreopt.SystemServerDepTag, dep)
+		}
+		*jars = append(*jars, name)
+	}
 }
 
 func (j *Module) checkSdkVersion(ctx android.ModuleContext) {
@@ -665,6 +704,11 @@ func (j *Module) deps(ctx android.BottomUpMutatorContext) {
 		}
 	} else if j.shouldInstrumentStatic(ctx) {
 		ctx.AddVariationDependencies(nil, staticLibTag, "jacocoagent")
+	}
+
+	// services depend on com.android.location.provider, but dependency in not registered in a Blueprint file
+	if ctx.ModuleName() == "services" {
+		ctx.AddDependency(ctx.Module(), dexpreopt.SystemServerForcedDepTag, "com.android.location.provider")
 	}
 }
 
@@ -1466,6 +1510,11 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 		j.headerJarFile = j.implementationJarFile
 	}
 
+	// Force enable the instrumentation for java code that is built for APEXes
+	if android.DirectlyInAnyApex(ctx, ctx.ModuleName()) && !j.IsForPlatform() {
+		j.properties.Instrument = true
+	}
+
 	if j.shouldInstrument(ctx) {
 		outputFile = j.instrument(ctx, flags, outputFile, jarName)
 	}
@@ -1481,6 +1530,16 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 	}
 
 	j.implementationAndResourcesJar = implementationAndResourcesJar
+
+	// Enable dex compilation for the APEX variants, unless it is disabled explicitly
+	if android.DirectlyInAnyApex(ctx, ctx.ModuleName()) && !j.IsForPlatform() {
+		if j.deviceProperties.Compile_dex == nil {
+			j.deviceProperties.Compile_dex = proptools.BoolPtr(true)
+		}
+		if j.deviceProperties.Hostdex == nil {
+			j.deviceProperties.Hostdex = proptools.BoolPtr(true)
+		}
+	}
 
 	if ctx.Device() && j.hasCode(ctx) &&
 		(Bool(j.properties.Installable) || Bool(j.deviceProperties.Compile_dex)) {
@@ -1731,6 +1790,10 @@ func (j *Module) JacocoReportClassesFile() android.Path {
 	return j.jacocoReportClassesFile
 }
 
+func (j *Module) IsInstallable() bool {
+	return Bool(j.properties.Installable)
+}
+
 //
 // Java libraries (.jar file)
 //
@@ -1768,7 +1831,6 @@ func (j *Library) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	j.checkSdkVersion(ctx)
 	j.dexpreopter.installPath = android.PathForModuleInstall(ctx, "framework", j.Stem()+".jar")
 	j.dexpreopter.isSDKLibrary = j.deviceProperties.IsSDKLibrary
-	j.dexpreopter.isInstallable = Bool(j.properties.Installable)
 	j.dexpreopter.uncompressedDex = shouldUncompressDex(ctx, &j.dexpreopter)
 	j.deviceProperties.UncompressDex = j.dexpreopter.uncompressedDex
 	j.compile(ctx, nil)
@@ -1847,6 +1909,15 @@ func (mt *librarySdkMemberType) buildSnapshot(
 
 	module := builder.AddPrebuiltModule(member, "java_import")
 	module.AddProperty("jars", []string{snapshotRelativeJavaLibPath})
+}
+
+var javaHeaderLibsSdkMemberType android.SdkMemberType = &headerLibrarySdkMemberType{
+	librarySdkMemberType{
+		android.SdkMemberTypeBase{
+			PropertyName: "java_header_libs",
+			SupportsSdk:  true,
+		},
+	},
 }
 
 type headerLibrarySdkMemberType struct {
@@ -2516,13 +2587,16 @@ func (j *DexImport) Stem() string {
 	return proptools.StringDefault(j.properties.Stem, j.ModuleBase.Name())
 }
 
+func (j *DexImport) IsInstallable() bool {
+	return true
+}
+
 func (j *DexImport) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	if len(j.properties.Jars) != 1 {
 		ctx.PropertyErrorf("jars", "exactly one jar must be provided")
 	}
 
 	j.dexpreopter.installPath = android.PathForModuleInstall(ctx, "framework", j.Stem()+".jar")
-	j.dexpreopter.isInstallable = true
 	j.dexpreopter.uncompressedDex = shouldUncompressDex(ctx, &j.dexpreopter)
 
 	inputJar := ctx.ExpandSource(j.properties.Jars[0], "jars")
