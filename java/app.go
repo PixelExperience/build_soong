@@ -129,6 +129,9 @@ type overridableAppProperties struct {
 	// or an android_app_certificate module name in the form ":module".
 	Certificate *string
 
+	// Name of the signing certificate lineage file.
+	Lineage *string
+
 	// the package name of this app. The package name in the manifest file is used if one was not given.
 	Package_name *string
 
@@ -175,6 +178,8 @@ type AndroidApp struct {
 	noticeOutputs android.NoticeOutputs
 
 	overriddenManifestPackageName string
+
+	android.ApexBundleDepsInfo
 }
 
 func (a *AndroidApp) IsInstallable() bool {
@@ -230,6 +235,16 @@ func (a *AndroidApp) DepsMutator(ctx android.BottomUpMutatorContext) {
 		a.aapt.deps(ctx, sdkDep)
 	}
 
+	usesSDK := a.sdkVersion().specified() && a.sdkVersion().kind != sdkCorePlatform
+
+	if usesSDK && Bool(a.appProperties.Jni_uses_sdk_apis) {
+		ctx.PropertyErrorf("jni_uses_sdk_apis",
+			"can only be set for modules that do not set sdk_version")
+	} else if !usesSDK && Bool(a.appProperties.Jni_uses_platform_apis) {
+		ctx.PropertyErrorf("jni_uses_platform_apis",
+			"can only be set for modules that set sdk_version")
+	}
+
 	tag := &jniDependencyTag{}
 	for _, jniTarget := range ctx.MultiTargets() {
 		variation := append(jniTarget.Variations(),
@@ -237,8 +252,7 @@ func (a *AndroidApp) DepsMutator(ctx android.BottomUpMutatorContext) {
 
 		// If the app builds against an Android SDK use the SDK variant of JNI dependencies
 		// unless jni_uses_platform_apis is set.
-		if a.sdkVersion().specified() && a.sdkVersion().kind != sdkCorePlatform &&
-			!Bool(a.appProperties.Jni_uses_platform_apis) ||
+		if (usesSDK && !Bool(a.appProperties.Jni_uses_platform_apis)) ||
 			Bool(a.appProperties.Jni_uses_sdk_apis) {
 			variation = append(variation, blueprint.Variation{Mutator: "sdk", Variation: "sdk"})
 		}
@@ -590,7 +604,11 @@ func (a *AndroidApp) generateAndroidBuildActions(ctx android.ModuleContext) {
 	if v4SigningRequested {
 		v4SignatureFile = android.PathForModuleOut(ctx, a.installApkName+".apk.idsig")
 	}
-	CreateAndSignAppPackage(ctx, packageFile, a.exportPackage, jniJarFile, dexJarFile, certificates, apkDeps, v4SignatureFile)
+	var lineageFile android.Path
+	if lineage := String(a.overridableAppProperties.Lineage); lineage != "" {
+		lineageFile = android.PathForModuleSrc(ctx, lineage)
+	}
+	CreateAndSignAppPackage(ctx, packageFile, a.exportPackage, jniJarFile, dexJarFile, certificates, apkDeps, v4SignatureFile, lineageFile)
 	a.outputFile = packageFile
 	if v4SigningRequested {
 		a.extraOutputFiles = append(a.extraOutputFiles, v4SignatureFile)
@@ -602,7 +620,7 @@ func (a *AndroidApp) generateAndroidBuildActions(ctx android.ModuleContext) {
 		if v4SigningRequested {
 			v4SignatureFile = android.PathForModuleOut(ctx, a.installApkName+"_"+split.suffix+".apk.idsig")
 		}
-		CreateAndSignAppPackage(ctx, packageFile, split.path, nil, nil, certificates, apkDeps, v4SignatureFile)
+		CreateAndSignAppPackage(ctx, packageFile, split.path, nil, nil, certificates, apkDeps, v4SignatureFile, lineageFile)
 		a.extraOutputFiles = append(a.extraOutputFiles, packageFile)
 		if v4SigningRequested {
 			a.extraOutputFiles = append(a.extraOutputFiles, v4SignatureFile)
@@ -621,6 +639,8 @@ func (a *AndroidApp) generateAndroidBuildActions(ctx android.ModuleContext) {
 			ctx.InstallFile(a.installDir, extra.Base(), extra)
 		}
 	}
+
+	a.buildAppDependencyInfo(ctx)
 }
 
 func collectAppDeps(ctx android.ModuleContext, shouldCollectRecursiveNativeDeps bool,
@@ -687,6 +707,49 @@ func collectAppDeps(ctx android.ModuleContext, shouldCollectRecursiveNativeDeps 
 	})
 
 	return jniLibs, certificates
+}
+
+func (a *AndroidApp) walkPayloadDeps(ctx android.ModuleContext,
+	do func(ctx android.ModuleContext, from blueprint.Module, to android.ApexModule, externalDep bool)) {
+
+	ctx.WalkDeps(func(child, parent android.Module) bool {
+		isExternal := !a.DepIsInSameApex(ctx, child)
+		if am, ok := child.(android.ApexModule); ok {
+			do(ctx, parent, am, isExternal)
+		}
+		return !isExternal
+	})
+}
+
+func (a *AndroidApp) buildAppDependencyInfo(ctx android.ModuleContext) {
+	if ctx.Host() {
+		return
+	}
+
+	depsInfo := android.DepNameToDepInfoMap{}
+	a.walkPayloadDeps(ctx, func(ctx android.ModuleContext, from blueprint.Module, to android.ApexModule, externalDep bool) {
+		depName := to.Name()
+		if info, exist := depsInfo[depName]; exist {
+			info.From = append(info.From, from.Name())
+			info.IsExternal = info.IsExternal && externalDep
+			depsInfo[depName] = info
+		} else {
+			toMinSdkVersion := "(no version)"
+			if m, ok := to.(interface{ MinSdkVersion() string }); ok {
+				if v := m.MinSdkVersion(); v != "" {
+					toMinSdkVersion = v
+				}
+			}
+			depsInfo[depName] = android.ApexModuleDepInfo{
+				To:            depName,
+				From:          []string{from.Name()},
+				IsExternal:    externalDep,
+				MinSdkVersion: toMinSdkVersion,
+			}
+		}
+	})
+
+	a.ApexBundleDepsInfo.BuildDepsInfoLists(ctx, a.MinSdkVersion(), depsInfo)
 }
 
 func (a *AndroidApp) getCertString(ctx android.BaseModuleContext) string {
@@ -1257,7 +1320,7 @@ func (a *AndroidAppImport) generateAndroidBuildActions(ctx android.ModuleContext
 		}
 		a.certificate = certificates[0]
 		signed := android.PathForModuleOut(ctx, "signed", apkFilename)
-		SignAppPackage(ctx, signed, dexOutput, certificates, nil)
+		SignAppPackage(ctx, signed, dexOutput, certificates, nil, nil)
 		a.outputFile = signed
 	} else {
 		alignedApk := android.PathForModuleOut(ctx, "zip-aligned", apkFilename)
@@ -1516,7 +1579,7 @@ func (r *RuntimeResourceOverlay) GenerateAndroidBuildActions(ctx android.ModuleC
 	_, certificates := collectAppDeps(ctx, false, false)
 	certificates = processMainCert(r.ModuleBase, String(r.properties.Certificate), certificates, ctx)
 	signed := android.PathForModuleOut(ctx, "signed", r.Name()+".apk")
-	SignAppPackage(ctx, signed, r.aapt.exportPackage, certificates, nil)
+	SignAppPackage(ctx, signed, r.aapt.exportPackage, certificates, nil, nil)
 	r.certificate = certificates[0]
 
 	r.outputFile = signed
