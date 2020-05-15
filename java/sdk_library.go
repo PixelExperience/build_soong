@@ -92,6 +92,9 @@ type apiScope struct {
 	// The name of the field in the dynamically created structure.
 	fieldName string
 
+	// The name of the property in the java_sdk_library_import
+	propertyName string
+
 	// The tag to use to depend on the stubs library module.
 	stubsTag scopeDependencyTag
 
@@ -142,7 +145,8 @@ type apiScope struct {
 // Initialize a scope, creating and adding appropriate dependency tags
 func initApiScope(scope *apiScope) *apiScope {
 	name := scope.name
-	scope.fieldName = proptools.FieldNameForProperty(name)
+	scope.propertyName = strings.ReplaceAll(name, "-", "_")
+	scope.fieldName = proptools.FieldNameForProperty(scope.propertyName)
 	scope.stubsTag = scopeDependencyTag{
 		name:             name + "-stubs",
 		apiScope:         scope,
@@ -253,7 +257,7 @@ var (
 		unstable:       true,
 	})
 	apiScopeModuleLib = initApiScope(&apiScope{
-		name:    "module_lib",
+		name:    "module-lib",
 		extends: apiScopeSystem,
 		// Module_lib scope is disabled by default in legacy mode.
 		//
@@ -1448,22 +1452,23 @@ func (module *sdkLibraryImport) createJavaImportForStubs(mctx android.Defaultabl
 	} else if module.SystemExtSpecific() {
 		props.System_ext_specific = proptools.BoolPtr(true)
 	}
-	// If the build should use prebuilt sdks then set prefer to true on the stubs library.
-	// That will cause the prebuilt version of the stubs to override the source version.
-	if mctx.Config().UnbundledBuildUsePrebuiltSdks() {
-		props.Prefer = proptools.BoolPtr(true)
-	}
+	// The imports are preferred if the java_sdk_library_import is preferred.
+	props.Prefer = proptools.BoolPtr(module.prebuilt.Prefer())
 	mctx.CreateModule(ImportFactory, &props)
 }
 
 func (module *sdkLibraryImport) createPrebuiltStubsSources(mctx android.DefaultableHookContext, apiScope *apiScope, scopeProperties *sdkLibraryScopeProperties) {
 	props := struct {
-		Name *string
-		Srcs []string
+		Name   *string
+		Srcs   []string
+		Prefer *bool
 	}{}
 	props.Name = proptools.StringPtr(module.stubsSourceModuleName(apiScope))
 	props.Srcs = scopeProperties.Stub_srcs
 	mctx.CreateModule(PrebuiltStubsSourcesFactory, &props)
+
+	// The stubs source is preferred if the java_sdk_library_import is preferred.
+	props.Prefer = proptools.BoolPtr(module.prebuilt.Prefer())
 }
 
 func (module *sdkLibraryImport) DepsMutator(ctx android.BottomUpMutatorContext) {
@@ -1667,6 +1672,9 @@ type sdkLibrarySdkMemberProperties struct {
 
 	// The Java stubs source files.
 	Stub_srcs []string
+
+	// The naming scheme.
+	Naming_scheme *string
 }
 
 type scopeProperties struct {
@@ -1696,12 +1704,17 @@ func (s *sdkLibrarySdkMemberProperties) PopulateFromVariant(ctx android.SdkMembe
 	}
 
 	s.Libs = sdk.properties.Libs
+	s.Naming_scheme = sdk.commonProperties.Naming_scheme
 }
 
 func (s *sdkLibrarySdkMemberProperties) AddToPropertySet(ctx android.SdkMemberContext, propertySet android.BpPropertySet) {
+	if s.Naming_scheme != nil {
+		propertySet.AddProperty("naming_scheme", proptools.String(s.Naming_scheme))
+	}
+
 	for _, apiScope := range allApiScopes {
 		if properties, ok := s.Scopes[apiScope]; ok {
-			scopeSet := propertySet.AddPropertySet(apiScope.name)
+			scopeSet := propertySet.AddPropertySet(apiScope.propertyName)
 
 			scopeDir := filepath.Join("sdk_library", s.OsPrefix(), apiScope.name)
 
