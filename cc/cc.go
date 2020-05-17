@@ -1395,6 +1395,15 @@ func (c *Module) IsTestPerSrcAllTestsVariation() bool {
 	return ok && test.isAllTestsVariation()
 }
 
+func (c *Module) DataPaths() android.Paths {
+	if p, ok := c.installer.(interface {
+		dataPaths() android.Paths
+	}); ok {
+		return p.dataPaths()
+	}
+	return nil
+}
+
 func (c *Module) getNameSuffixWithVndkVersion(ctx android.ModuleContext) string {
 	// Returns the name suffix for product and vendor variants. If the VNDK version is not
 	// "current", it will append the VNDK version to the name suffix.
@@ -2862,6 +2871,9 @@ func (c *Module) DepIsInSameApex(ctx android.BaseModuleContext, dep android.Modu
 				return false
 			}
 		}
+	} else if ctx.OtherModuleDependencyTag(dep) == llndkImplDep {
+		// We don't track beyond LLNDK
+		return false
 	}
 	return true
 }

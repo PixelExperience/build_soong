@@ -61,6 +61,7 @@ func init() {
 	pctx.HostBinToolVariable("zipalign", "zipalign")
 	pctx.HostBinToolVariable("jsonmodify", "jsonmodify")
 	pctx.HostBinToolVariable("conv_apex_manifest", "conv_apex_manifest")
+	pctx.HostBinToolVariable("extract_apks", "extract_apks")
 }
 
 var (
@@ -350,6 +351,19 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 			symlinkDest := android.PathForModuleOut(ctx, "image"+suffix, symlinkPath).String()
 			copyCommands = append(copyCommands, "ln -sfn "+filepath.Base(destPath)+" "+symlinkDest)
 		}
+		for _, d := range fi.dataPaths {
+			// TODO(eakammer): This is now the third repetition of ~this logic for test paths, refactoring should be possible
+			relPath := d.Rel()
+			dataPath := d.String()
+			if !strings.HasSuffix(dataPath, relPath) {
+				panic(fmt.Errorf("path %q does not end with %q", dataPath, relPath))
+			}
+
+			dataDest := android.PathForModuleOut(ctx, "image"+suffix, fi.apexRelativePath(relPath)).String()
+
+			copyCommands = append(copyCommands, "cp -f "+d.String()+" "+dataDest)
+			implicitInputs = append(implicitInputs, d)
+		}
 	}
 
 	// TODO(jiyong): use RuleBuilder
@@ -406,6 +420,9 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 			pathInApex := filepath.Join(f.installDir, f.builtFile.Base())
 			if f.installDir == "bin" || strings.HasPrefix(f.installDir, "bin/") {
 				executablePaths = append(executablePaths, pathInApex)
+				for _, d := range f.dataPaths {
+					readOnlyPaths = append(readOnlyPaths, filepath.Join(f.installDir, d.Rel()))
+				}
 				for _, s := range f.symlinks {
 					executablePaths = append(executablePaths, filepath.Join(f.installDir, s))
 				}

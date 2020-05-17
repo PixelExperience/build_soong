@@ -120,6 +120,9 @@ func (a *apexBundle) androidMkForFiles(w io.Writer, apexBundleName, apexName, mo
 			if len(fi.symlinks) > 0 {
 				fmt.Fprintln(w, "LOCAL_MODULE_SYMLINKS :=", strings.Join(fi.symlinks, " "))
 			}
+			if len(fi.dataPaths) > 0 {
+				fmt.Println(w, "LOCAL_TEST_DATA :=", strings.Join(cc.AndroidMkDataPaths(fi.dataPaths), " "))
+			}
 
 			if fi.module != nil && len(fi.module.NoticeFiles()) > 0 {
 				fmt.Fprintln(w, "LOCAL_NOTICE_FILE :=", strings.Join(fi.module.NoticeFiles().Strings(), " "))
@@ -166,7 +169,7 @@ func (a *apexBundle) androidMkForFiles(w io.Writer, apexBundleName, apexName, mo
 			fmt.Fprintln(w, "LOCAL_SOONG_JACOCO_REPORT_CLASSES_JAR :=", fi.jacocoReportClassesFile.String())
 		}
 		if fi.class == javaSharedLib {
-			javaModule := fi.module.(javaLibrary)
+			javaModule := fi.module.(java.Dependency)
 			// soong_java_prebuilt.mk sets LOCAL_MODULE_SUFFIX := .jar  Therefore
 			// we need to remove the suffix from LOCAL_MODULE_STEM, otherwise
 			// we will have foo.jar.jar
