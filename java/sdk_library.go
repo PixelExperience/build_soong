@@ -1553,13 +1553,8 @@ func (module *SdkLibrary) CreateInternalModules(mctx android.DefaultableHookCont
 }
 
 func (module *SdkLibrary) InitSdkLibraryProperties() {
-	module.AddProperties(
-		&module.sdkLibraryProperties,
-		&module.properties,
-		&module.dexpreoptProperties,
-		&module.deviceProperties,
-		&module.protoProperties,
-	)
+	module.addHostAndDeviceProperties()
+	module.AddProperties(&module.sdkLibraryProperties)
 
 	module.initSdkLibraryComponent(&module.ModuleBase)
 
@@ -2007,6 +2002,26 @@ func (module *SdkLibraryImport) JacocoReportClassesFile() android.Path {
 // to satisfy apex.javaDependency interface
 func (module *SdkLibraryImport) Stem() string {
 	return module.BaseModuleName()
+}
+
+var _ ApexDependency = (*SdkLibraryImport)(nil)
+
+// to satisfy java.ApexDependency interface
+func (module *SdkLibraryImport) HeaderJars() android.Paths {
+	if module.implLibraryModule == nil {
+		return nil
+	} else {
+		return module.implLibraryModule.HeaderJars()
+	}
+}
+
+// to satisfy java.ApexDependency interface
+func (module *SdkLibraryImport) ImplementationAndResourcesJars() android.Paths {
+	if module.implLibraryModule == nil {
+		return nil
+	} else {
+		return module.implLibraryModule.ImplementationAndResourcesJars()
+	}
 }
 
 //
