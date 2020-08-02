@@ -94,12 +94,12 @@ func TestDumpRBEMetricsErrors(t *testing.T) {
 	}, {
 		description:         "stopRBE failed",
 		rbeOutputDirDefined: true,
-		bootstrapProgram:    "#!/bin/bash\nexit 1",
+		bootstrapProgram:    "#!/bin/bash\nexit 1\n",
 		expectedErr:         "shutdown failed",
 	}, {
 		description:         "failed to copy metrics file",
 		rbeOutputDirDefined: true,
-		bootstrapProgram:    "#!/bin/bash",
+		bootstrapProgram:    "#!/bin/bash\n",
 		expectedErr:         "failed to copy",
 	}}
 
@@ -139,4 +139,4 @@ func TestDumpRBEMetricsErrors(t *testing.T) {
 	}
 }
 
-var rbeBootstrapProgram = fmt.Sprintf("#!/bin/bash\necho 1 > $RBE_output_dir/%s", rbeMetricsPBFilename)
+var rbeBootstrapProgram = fmt.Sprintf("#!/bin/bash\necho 1 > $RBE_output_dir/%s\n", rbeMetricsPBFilename)
