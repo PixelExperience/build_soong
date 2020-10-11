@@ -54,10 +54,58 @@ func TestMain(m *testing.M) {
 	os.Exit(run())
 }
 
-func testConfig(bp string) android.Config {
-	bp = bp + GatherRequiredDepsForTest()
+// testRust returns a TestContext in which a basic environment has been setup.
+// This environment contains a few mocked files. See testRustCtx.useMockedFs
+// for the list of these files.
+func testRust(t *testing.T, bp string) *android.TestContext {
+	tctx := newTestRustCtx(t, bp)
+	tctx.useMockedFs()
+	tctx.generateConfig()
+	return tctx.parse(t)
+}
 
-	fs := map[string][]byte{
+// testRustCov returns a TestContext in which a basic environment has been
+// setup. This environment explicitly enables coverage.
+func testRustCov(t *testing.T, bp string) *android.TestContext {
+	tctx := newTestRustCtx(t, bp)
+	tctx.useMockedFs()
+	tctx.generateConfig()
+	tctx.enableCoverage(t)
+	return tctx.parse(t)
+}
+
+// testRustError ensures that at least one error was raised and its value
+// matches the pattern provided. The error can be either in the parsing of the
+// Blueprint or when generating the build actions.
+func testRustError(t *testing.T, pattern string, bp string) {
+	tctx := newTestRustCtx(t, bp)
+	tctx.useMockedFs()
+	tctx.generateConfig()
+	tctx.parseError(t, pattern)
+}
+
+// testRustCtx is used to build a particular test environment. Unless your
+// tests requires a specific setup, prefer the wrapping functions: testRust,
+// testRustCov or testRustError.
+type testRustCtx struct {
+	bp     string
+	fs     map[string][]byte
+	env    map[string]string
+	config *android.Config
+}
+
+// newTestRustCtx returns a new testRustCtx for the Blueprint definition argument.
+func newTestRustCtx(t *testing.T, bp string) *testRustCtx {
+	// TODO (b/140435149)
+	if runtime.GOOS != "linux" {
+		t.Skip("Rust Soong tests can only be run on Linux hosts currently")
+	}
+	return &testRustCtx{bp: bp}
+}
+
+// useMockedFs setup a default mocked filesystem for the test environment.
+func (tctx *testRustCtx) useMockedFs() {
+	tctx.fs = map[string][]byte{
 		"foo.rs":     nil,
 		"foo.c":      nil,
 		"src/bar.rs": nil,
@@ -66,57 +114,51 @@ func testConfig(bp string) android.Config {
 		"liby.so":    nil,
 		"libz.so":    nil,
 	}
-
-	cc.GatherRequiredFilesForTest(fs)
-
-	return android.TestArchConfig(buildDir, nil, bp, fs)
 }
 
-func testRust(t *testing.T, bp string) *android.TestContext {
-	return testRustContext(t, bp, false)
+// generateConfig creates the android.Config based on the bp, fs and env
+// attributes of the testRustCtx.
+func (tctx *testRustCtx) generateConfig() {
+	tctx.bp = tctx.bp + GatherRequiredDepsForTest()
+	cc.GatherRequiredFilesForTest(tctx.fs)
+	config := android.TestArchConfig(buildDir, tctx.env, tctx.bp, tctx.fs)
+	tctx.config = &config
 }
 
-func testRustCov(t *testing.T, bp string) *android.TestContext {
-	return testRustContext(t, bp, true)
-}
-
-func testRustContext(t *testing.T, bp string, coverage bool) *android.TestContext {
-	// TODO (b/140435149)
-	if runtime.GOOS != "linux" {
-		t.Skip("Only the Linux toolchain is supported for Rust")
+// enableCoverage configures the test to enable coverage.
+func (tctx *testRustCtx) enableCoverage(t *testing.T) {
+	if tctx.config == nil {
+		t.Fatalf("tctx.config not been generated yet. Please call generateConfig first.")
 	}
+	tctx.config.TestProductVariables.GcovCoverage = proptools.BoolPtr(true)
+	tctx.config.TestProductVariables.Native_coverage = proptools.BoolPtr(true)
+	tctx.config.TestProductVariables.NativeCoveragePaths = []string{"*"}
+}
 
-	t.Helper()
-	config := testConfig(bp)
-
-	if coverage {
-		config.TestProductVariables.GcovCoverage = proptools.BoolPtr(true)
-		config.TestProductVariables.Native_coverage = proptools.BoolPtr(true)
-		config.TestProductVariables.NativeCoveragePaths = []string{"*"}
+// parse validates the configuration and parses the Blueprint file. It returns
+// a TestContext which can be used to retrieve the generated modules via
+// ModuleForTests.
+func (tctx testRustCtx) parse(t *testing.T) *android.TestContext {
+	if tctx.config == nil {
+		t.Fatalf("tctx.config not been generated yet. Please call generateConfig first.")
 	}
-
 	ctx := CreateTestContext()
-	ctx.Register(config)
-
+	ctx.Register(*tctx.config)
 	_, errs := ctx.ParseFileList(".", []string{"Android.bp"})
 	android.FailIfErrored(t, errs)
-	_, errs = ctx.PrepareBuildActions(config)
+	_, errs = ctx.PrepareBuildActions(*tctx.config)
 	android.FailIfErrored(t, errs)
-
 	return ctx
 }
 
-func testRustError(t *testing.T, pattern string, bp string) {
-	// TODO (b/140435149)
-	if runtime.GOOS != "linux" {
-		t.Skip("Only the Linux toolchain is supported for Rust")
+// parseError parses the Blueprint file and ensure that at least one error
+// matching the provided pattern is observed.
+func (tctx testRustCtx) parseError(t *testing.T, pattern string) {
+	if tctx.config == nil {
+		t.Fatalf("tctx.config not been generated yet. Please call generateConfig first.")
 	}
-
-	t.Helper()
-	config := testConfig(bp)
-
 	ctx := CreateTestContext()
-	ctx.Register(config)
+	ctx.Register(*tctx.config)
 
 	_, errs := ctx.ParseFileList(".", []string{"Android.bp"})
 	if len(errs) > 0 {
@@ -124,7 +166,7 @@ func testRustError(t *testing.T, pattern string, bp string) {
 		return
 	}
 
-	_, errs = ctx.PrepareBuildActions(config)
+	_, errs = ctx.PrepareBuildActions(*tctx.config)
 	if len(errs) > 0 {
 		android.FailIfNoMatchingErrors(t, pattern, errs)
 		return
@@ -135,7 +177,6 @@ func testRustError(t *testing.T, pattern string, bp string) {
 
 // Test that we can extract the link path from a lib path.
 func TestLinkPathFromFilePath(t *testing.T) {
-	t.Parallel()
 	barPath := android.PathForTesting("out/soong/.intermediates/external/libbar/libbar/linux_glibc_x86_64_shared/libbar.so")
 	libName := linkPathFromFilePath(barPath)
 	expectedResult := "out/soong/.intermediates/external/libbar/libbar/linux_glibc_x86_64_shared/"
@@ -147,7 +188,6 @@ func TestLinkPathFromFilePath(t *testing.T) {
 
 // Test to make sure dependencies are being picked up correctly.
 func TestDepsTracking(t *testing.T) {
-	t.Parallel()
 	ctx := testRust(t, `
 		rust_ffi_host_static {
 			name: "libstatic",
@@ -209,7 +249,6 @@ func TestDepsTracking(t *testing.T) {
 }
 
 func TestSourceProviderDeps(t *testing.T) {
-	t.Parallel()
 	ctx := testRust(t, `
 		rust_binary {
 			name: "fizz-buzz-dep",
@@ -297,7 +336,6 @@ func TestSourceProviderDeps(t *testing.T) {
 }
 
 func TestSourceProviderTargetMismatch(t *testing.T) {
-	t.Parallel()
 	// This might error while building the dependency tree or when calling depsToPaths() depending on the lunched
 	// target, which results in two different errors. So don't check the error, just confirm there is one.
 	testRustError(t, ".*", `
@@ -320,7 +358,6 @@ func TestSourceProviderTargetMismatch(t *testing.T) {
 
 // Test to make sure proc_macros use host variants when building device modules.
 func TestProcMacroDeviceDeps(t *testing.T) {
-	t.Parallel()
 	ctx := testRust(t, `
 		rust_library_host_rlib {
 			name: "libbar",
@@ -348,7 +385,6 @@ func TestProcMacroDeviceDeps(t *testing.T) {
 
 // Test that no_stdlibs suppresses dependencies on rust standard libraries
 func TestNoStdlibs(t *testing.T) {
-	t.Parallel()
 	ctx := testRust(t, `
 		rust_binary {
 			name: "fizz-buzz",
@@ -364,7 +400,6 @@ func TestNoStdlibs(t *testing.T) {
 
 // Test that libraries provide both 32-bit and 64-bit variants.
 func TestMultilib(t *testing.T) {
-	t.Parallel()
 	ctx := testRust(t, `
 		rust_library_rlib {
 			name: "libfoo",

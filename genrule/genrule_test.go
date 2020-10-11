@@ -125,7 +125,6 @@ func testConfig(bp string, fs map[string][]byte) android.Config {
 }
 
 func TestGenruleCmd(t *testing.T) {
-	t.Parallel()
 	testcases := []struct {
 		name string
 		prop string
@@ -504,7 +503,6 @@ func TestGenruleCmd(t *testing.T) {
 }
 
 func TestGenruleHashInputs(t *testing.T) {
-	t.Parallel()
 
 	// The basic idea here is to verify that the sbox command (which is
 	// in the Command field of the generate rule) contains a hash of the
@@ -592,7 +590,6 @@ func TestGenruleHashInputs(t *testing.T) {
 }
 
 func TestGenSrcs(t *testing.T) {
-	t.Parallel()
 	testcases := []struct {
 		name string
 		prop string
@@ -685,7 +682,6 @@ func TestGenSrcs(t *testing.T) {
 }
 
 func TestGenruleDefaults(t *testing.T) {
-	t.Parallel()
 	bp := `
 				genrule_defaults {
 					name: "gen_defaults1",
@@ -722,6 +718,39 @@ func TestGenruleDefaults(t *testing.T) {
 	expectedSrcs := []string{"in1"}
 	if !reflect.DeepEqual(expectedSrcs, gen.properties.Srcs) {
 		t.Errorf("Expected srcs: %q, actual: %q", expectedSrcs, gen.properties.Srcs)
+	}
+}
+
+func TestGenruleWithBazel(t *testing.T) {
+	bp := `
+		genrule {
+				name: "foo",
+				out: ["one.txt", "two.txt"],
+				bazel_module: "//foo/bar:bar",
+		}
+	`
+
+	config := testConfig(bp, nil)
+	config.BazelContext = android.MockBazelContext{
+		AllFiles: map[string][]string{
+			"//foo/bar:bar": []string{"bazelone.txt", "bazeltwo.txt"}}}
+
+	ctx := testContext(config)
+	_, errs := ctx.ParseFileList(".", []string{"Android.bp"})
+	if errs == nil {
+		_, errs = ctx.PrepareBuildActions(config)
+	}
+	if errs != nil {
+		t.Fatal(errs)
+	}
+	gen := ctx.ModuleForTests("foo", "").Module().(*Module)
+
+	expectedOutputFiles := []string{"bazelone.txt", "bazeltwo.txt"}
+	if !reflect.DeepEqual(gen.outputFiles.Strings(), expectedOutputFiles) {
+		t.Errorf("Expected output files: %q, actual: %q", expectedOutputFiles, gen.outputFiles)
+	}
+	if !reflect.DeepEqual(gen.outputDeps.Strings(), expectedOutputFiles) {
+		t.Errorf("Expected output deps: %q, actual: %q", expectedOutputFiles, gen.outputDeps)
 	}
 }
 
