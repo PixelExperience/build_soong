@@ -1319,6 +1319,7 @@ func TestApexWithSystemLibsStubs(t *testing.T) {
 		cc_library {
 			name: "mylib",
 			srcs: ["mylib.cpp"],
+			system_shared_libs: ["libc", "libm"],
 			shared_libs: ["libdl#27"],
 			stl: "none",
 			apex_available: [ "myapex" ],
@@ -5595,6 +5596,36 @@ func TestAppSetBundle(t *testing.T) {
 	ensureMatches(t, copyCmds[0], "^rm -rf .*/app/AppSet$")
 	ensureMatches(t, copyCmds[1], "^mkdir -p .*/app/AppSet$")
 	ensureMatches(t, copyCmds[2], "^unzip .*-d .*/app/AppSet .*/AppSet.zip$")
+}
+
+func TestAppSetBundlePrebuilt(t *testing.T) {
+	ctx, _ := testApex(t, "", func(fs map[string][]byte, config android.Config) {
+		bp := `
+		apex_set {
+			name: "myapex",
+			filename: "foo_v2.apex",
+			sanitized: {
+				none: { set: "myapex.apks", },
+				hwaddress: { set: "myapex.hwasan.apks", },
+			},
+		}`
+		fs["Android.bp"] = []byte(bp)
+
+		config.TestProductVariables.SanitizeDevice = []string{"hwaddress"}
+	})
+
+	m := ctx.ModuleForTests("myapex", "android_common")
+	extractedApex := m.Output(buildDir + "/.intermediates/myapex/android_common/foo_v2.apex")
+
+	actual := extractedApex.Inputs
+	if len(actual) != 1 {
+		t.Errorf("expected a single input")
+	}
+
+	expected := "myapex.hwasan.apks"
+	if actual[0].String() != expected {
+		t.Errorf("expected %s, got %s", expected, actual[0].String())
+	}
 }
 
 func testNoUpdatableJarsInBootImage(t *testing.T, errmsg string, transformDexpreoptConfig func(*dexpreopt.GlobalConfig)) {
