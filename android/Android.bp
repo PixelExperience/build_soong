@@ -7,7 +7,6 @@ bootstrap_go_package {
         "soong",
         "soong-android-soongconfig",
         "soong-env",
-        "soong-aosp",
         "soong-shared",
     ],
     srcs: [
