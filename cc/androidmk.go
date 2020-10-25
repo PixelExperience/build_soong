@@ -24,15 +24,17 @@ import (
 )
 
 var (
-	nativeBridgeSuffix = ".native_bridge"
-	productSuffix      = ".product"
-	vendorSuffix       = ".vendor"
-	ramdiskSuffix      = ".ramdisk"
-	recoverySuffix     = ".recovery"
-	sdkSuffix          = ".sdk"
+	nativeBridgeSuffix  = ".native_bridge"
+	productSuffix       = ".product"
+	vendorSuffix        = ".vendor"
+	ramdiskSuffix       = ".ramdisk"
+	vendorRamdiskSuffix = ".vendor_ramdisk"
+	recoverySuffix      = ".recovery"
+	sdkSuffix           = ".sdk"
 )
 
 type AndroidMkContext interface {
+	BaseModuleName() string
 	Target() android.Target
 	subAndroidMk(*android.AndroidMkEntries, interface{})
 	Arch() android.Arch
@@ -42,6 +44,7 @@ type AndroidMkContext interface {
 	VndkVersion() string
 	static() bool
 	InRamdisk() bool
+	InVendorRamdisk() bool
 	InRecovery() bool
 	AnyVariantDirectlyInAnyApex() bool
 }
@@ -279,7 +282,7 @@ func (library *libraryDecorator) AndroidMkEntries(ctx AndroidMkContext, entries 
 		})
 	}
 	if len(library.Properties.Stubs.Versions) > 0 && !ctx.Host() && ctx.AnyVariantDirectlyInAnyApex() &&
-		!ctx.InRamdisk() && !ctx.InRecovery() && !ctx.UseVndk() && !ctx.static() {
+		!ctx.InRamdisk() && !ctx.InVendorRamdisk() && !ctx.InRecovery() && !ctx.UseVndk() && !ctx.static() {
 		if library.buildStubs() && library.isLatestStubVersion() {
 			// reference the latest version via its name without suffix when it is provided by apex
 			entries.SubName = ""
@@ -463,6 +466,7 @@ func (c *stubDecorator) AndroidMkEntries(ctx AndroidMkContext, entries *android.
 
 func (c *llndkStubDecorator) AndroidMkEntries(ctx AndroidMkContext, entries *android.AndroidMkEntries) {
 	entries.Class = "SHARED_LIBRARIES"
+	entries.OverrideName = c.implementationModuleName(ctx.BaseModuleName())
 
 	entries.ExtraEntries = append(entries.ExtraEntries, func(entries *android.AndroidMkEntries) {
 		c.libraryDecorator.androidMkWriteExportedFlags(entries)
