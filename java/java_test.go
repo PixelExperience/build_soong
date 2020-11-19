@@ -92,8 +92,8 @@ func testContext(config android.Config) *android.TestContext {
 
 	ctx.PreDepsMutators(python.RegisterPythonPreDepsMutators)
 	ctx.PostDepsMutators(android.RegisterOverridePostDepsMutators)
-	ctx.RegisterPreSingletonType("overlay", android.SingletonFactoryAdaptor(OverlaySingletonFactory))
-	ctx.RegisterPreSingletonType("sdk_versions", android.SingletonFactoryAdaptor(sdkPreSingletonFactory))
+	ctx.RegisterPreSingletonType("overlay", android.SingletonFactoryAdaptor(ctx.Context, OverlaySingletonFactory))
+	ctx.RegisterPreSingletonType("sdk_versions", android.SingletonFactoryAdaptor(ctx.Context, sdkPreSingletonFactory))
 
 	android.RegisterPrebuiltMutators(ctx)
 
@@ -1379,8 +1379,8 @@ func TestJarGenrules(t *testing.T) {
 	baz := ctx.ModuleForTests("baz", "android_common").Output("javac/baz.jar")
 	barCombined := ctx.ModuleForTests("bar", "android_common").Output("combined/bar.jar")
 
-	if len(jargen.Inputs) != 1 || jargen.Inputs[0].String() != foo.Output.String() {
-		t.Errorf("expected jargen inputs [%q], got %q", foo.Output.String(), jargen.Inputs.Strings())
+	if g, w := jargen.Implicits.Strings(), foo.Output.String(); !android.InList(w, g) {
+		t.Errorf("expected jargen inputs [%q], got %q", w, g)
 	}
 
 	if !strings.Contains(bar.Args["classpath"], jargen.Output.String()) {
