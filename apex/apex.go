@@ -530,11 +530,8 @@ func addDependenciesForNativeModules(ctx android.BottomUpMutatorContext, nativeM
 
 	if ctx.Device() {
 		binVariations = append(binVariations, blueprint.Variation{Mutator: "image", Variation: imageVariation})
-		libVariations = append(libVariations,
-			blueprint.Variation{Mutator: "image", Variation: imageVariation},
-			blueprint.Variation{Mutator: "version", Variation: ""}) // "" is the non-stub variant
-		rustLibVariations = append(rustLibVariations,
-			blueprint.Variation{Mutator: "image", Variation: imageVariation})
+		libVariations = append(libVariations, blueprint.Variation{Mutator: "image", Variation: imageVariation})
+		rustLibVariations = append(rustLibVariations, blueprint.Variation{Mutator: "image", Variation: imageVariation})
 	}
 
 	// Use *FarVariation* to be able to depend on modules having conflicting variations with
@@ -1530,6 +1527,9 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 						provideNativeLibs = append(provideNativeLibs, fi.stem())
 					}
 					return true // track transitive dependencies
+				} else if r, ok := child.(*rust.Module); ok {
+					fi := apexFileForRustLibrary(ctx, r)
+					filesInfo = append(filesInfo, fi)
 				} else {
 					propertyName := "native_shared_libs"
 					if isJniLib {
@@ -1689,6 +1689,24 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 							// Don't track further
 							return false
 						}
+
+						// If the dep is not considered to be in the same
+						// apex, don't add it to filesInfo so that it is not
+						// included in this APEX.
+						// TODO(jiyong): move this to at the top of the
+						// else-if clause for the indirect dependencies.
+						// Currently, that's impossible because we would
+						// like to record requiredNativeLibs even when
+						// DepIsInSameAPex is false.
+						if !am.DepIsInSameApex(ctx, am) {
+							return false
+						}
+
+						filesInfo = append(filesInfo, af)
+						return true // track transitive dependencies
+					} else if rm, ok := child.(*rust.Module); ok {
+						af := apexFileForRustLibrary(ctx, rm)
+						af.transitiveDep = true
 						filesInfo = append(filesInfo, af)
 						return true // track transitive dependencies
 					}
