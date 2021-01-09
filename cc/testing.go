@@ -299,7 +299,7 @@ func GatherRequiredDepsForTest(oses ...android.OsType) string {
 		llndk_library {
 			name: "libft2.llndk",
 			symbol_file: "",
-			vendor_available: false,
+			private: true,
 			sdk_version: "current",
 		}
 		cc_library {
@@ -577,6 +577,7 @@ func CreateTestContext(config android.Config) *android.TestContext {
 	RegisterRequiredBuildComponentsForTest(ctx)
 	ctx.RegisterSingletonType("vndk-snapshot", VndkSnapshotSingleton)
 	ctx.RegisterSingletonType("vendor-snapshot", VendorSnapshotSingleton)
+	ctx.RegisterSingletonType("vendor-fake-snapshot", VendorFakeSnapshotSingleton)
 	ctx.RegisterSingletonType("recovery-snapshot", RecoverySnapshotSingleton)
 
 	return ctx

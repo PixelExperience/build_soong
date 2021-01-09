@@ -234,9 +234,6 @@ func checkVndkModule(t *testing.T, ctx *android.TestContext, name, subDir string
 	t.Helper()
 
 	mod := ctx.ModuleForTests(name, variant).Module().(*Module)
-	if !mod.HasVendorVariant() {
-		t.Errorf("%q must have variant %q", name, variant)
-	}
 
 	// Check library properties.
 	lib, ok := mod.compiler.(*libraryDecorator)
@@ -733,10 +730,11 @@ func TestVndkWhenVndkVersionIsNotSet(t *testing.T) {
 		}
 		cc_library {
 			name: "libvndk-private",
-			vendor_available: false,
-			product_available: false,
+			vendor_available: true,
+			product_available: true,
 			vndk: {
 				enabled: true,
+				private: true,
 			},
 			nocrt: true,
 		}
@@ -760,7 +758,7 @@ func TestVndkWhenVndkVersionIsNotSet(t *testing.T) {
 
 func TestVndkModuleError(t *testing.T) {
 	// Check the error message for vendor_available and product_available properties.
-	testCcErrorProductVndk(t, "vndk: vendor_available must be set to either true or false when `vndk: {enabled: true}`", `
+	testCcErrorProductVndk(t, "vndk: vendor_available must be set to true when `vndk: {enabled: true}`", `
 		cc_library {
 			name: "libvndk",
 			vndk: {
@@ -770,7 +768,7 @@ func TestVndkModuleError(t *testing.T) {
 		}
 	`)
 
-	testCcErrorProductVndk(t, "vndk: vendor_available must be set to either true or false when `vndk: {enabled: true}`", `
+	testCcErrorProductVndk(t, "vndk: vendor_available must be set to true when `vndk: {enabled: true}`", `
 		cc_library {
 			name: "libvndk",
 			product_available: true,
@@ -1248,6 +1246,15 @@ func TestVendorSnapshotCapture(t *testing.T) {
 			t.Errorf("%q expected but not found", jsonFile)
 		}
 	}
+
+	// fake snapshot should have all outputs in the normal snapshot.
+	fakeSnapshotSingleton := ctx.SingletonForTests("vendor-fake-snapshot")
+	for _, output := range snapshotSingleton.AllOutputs() {
+		fakeOutput := strings.Replace(output, "/vendor-snapshot/", "/fake/vendor-snapshot/", 1)
+		if fakeSnapshotSingleton.MaybeOutput(fakeOutput).Rule == nil {
+			t.Errorf("%q expected but not found", fakeOutput)
+		}
+	}
 }
 
 func TestVendorSnapshotUse(t *testing.T) {
@@ -1679,6 +1686,8 @@ func TestVendorSnapshotExcludeInVendorProprietaryPathErrors(t *testing.T) {
 		`module "libvendor\{.+,image:vendor.+,arch:arm_.+\}" in vendor proprietary path "device" may not use "exclude_from_vendor_snapshot: true"`,
 		`module "libvendor\{.+,image:vendor.+,arch:arm64_.+\}" in vendor proprietary path "device" may not use "exclude_from_vendor_snapshot: true"`,
 		`module "libvendor\{.+,image:vendor.+,arch:arm_.+\}" in vendor proprietary path "device" may not use "exclude_from_vendor_snapshot: true"`,
+		`module "libvendor\{.+,image:vendor.+,arch:arm64_.+\}" in vendor proprietary path "device" may not use "exclude_from_vendor_snapshot: true"`,
+		`module "libvendor\{.+,image:vendor.+,arch:arm_.+\}" in vendor proprietary path "device" may not use "exclude_from_vendor_snapshot: true"`,
 	})
 }
 
@@ -1718,6 +1727,10 @@ func TestVendorSnapshotExcludeWithVendorAvailable(t *testing.T) {
 
 	_, errs = ctx.PrepareBuildActions(config)
 	android.CheckErrorsAgainstExpectations(t, errs, []string{
+		`module "libinclude\{.+,image:,arch:arm64_.+\}" may not use both "vendor_available: true" and "exclude_from_vendor_snapshot: true"`,
+		`module "libinclude\{.+,image:,arch:arm_.+\}" may not use both "vendor_available: true" and "exclude_from_vendor_snapshot: true"`,
+		`module "libinclude\{.+,image:vendor.+,arch:arm64_.+\}" may not use both "vendor_available: true" and "exclude_from_vendor_snapshot: true"`,
+		`module "libinclude\{.+,image:vendor.+,arch:arm_.+\}" may not use both "vendor_available: true" and "exclude_from_vendor_snapshot: true"`,
 		`module "libinclude\{.+,image:,arch:arm64_.+\}" may not use both "vendor_available: true" and "exclude_from_vendor_snapshot: true"`,
 		`module "libinclude\{.+,image:,arch:arm_.+\}" may not use both "vendor_available: true" and "exclude_from_vendor_snapshot: true"`,
 		`module "libinclude\{.+,image:vendor.+,arch:arm64_.+\}" may not use both "vendor_available: true" and "exclude_from_vendor_snapshot: true"`,
@@ -3139,7 +3152,7 @@ func TestMakeLinkType(t *testing.T) {
 		}
 		llndk_library {
 			name: "libllndkprivate.llndk",
-			vendor_available: false,
+			private: true,
 			symbol_file: "",
 		}`
 
