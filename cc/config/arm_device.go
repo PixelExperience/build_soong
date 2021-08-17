@@ -152,8 +152,8 @@ var (
 			"-D__ARM_FEATURE_LPAE=1",
 		},
 		"kryo385": []string{
-			// Use cortex-a53 because kryo385 is not supported in GCC/clang.
-			"-mcpu=cortex-a53",
+			// Use cortex-a55 without dotprod because kryo385 is not supported in GCC/clang.
+			"-mcpu=cortex-a55+nodotprod",
 			// Fake an ARM compiler flag as these processors support LPAE which GCC/clang
 			// don't advertise.
 			// TODO This is a hack and we need to add it for each processor that supports LPAE until some

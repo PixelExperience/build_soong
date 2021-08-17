@@ -70,8 +70,8 @@ var (
 			"-mcpu=kryo",
 		},
 		"kryo385": []string{
-			// Use cortex-a53 because kryo385 is not supported in GCC/clang.
-			"-mcpu=cortex-a53",
+			// Use cortex-a55 without dotprod because kryo385 is not supported in GCC/clang.
+			"-mcpu=cortex-a55+nodotprod",
 		},
 		"exynos-m1": []string{
 			"-mcpu=exynos-m1",
