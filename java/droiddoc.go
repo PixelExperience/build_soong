@@ -688,6 +688,7 @@ func javadocCmd(ctx android.ModuleContext, rule *android.RuleBuilder, srcs andro
 	cmd := rule.Command().
 		BuiltTool("soong_javac_wrapper").Tool(config.JavadocCmd(ctx)).
 		Flag(config.JavacVmFlags).
+		Flag("-J-Xmx3112m").
 		FlagWithArg("-encoding ", "UTF-8").
 		FlagWithRspFileInputList("@", android.PathForModuleOut(ctx, "javadoc.rsp"), srcs).
 		FlagWithInput("@", srcJarList)
