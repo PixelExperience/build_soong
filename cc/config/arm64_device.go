@@ -68,9 +68,9 @@ var (
 			"-mcpu=cortex-a55",
 		},
 		"cortex-a76": []string{
-			// Use the cortex-a75 because some AOSP repos still use
-			// -no-integrated-as and binutils doesn't know the a76.
-			"-mcpu=cortex-a75",
+			// Use the cortex-a55 since it is similar to the little
+			// core (cortex-a55) and is sensitive to ordering.
+			"-mcpu=cortex-a55",
 		},
 		"kryo": []string{
 			"-mcpu=kryo",
@@ -118,9 +118,6 @@ func init() {
 	pctx.StaticVariable("Arm64ClangCortexA55Cflags",
 		strings.Join(arm64ClangCpuVariantCflags["cortex-a55"], " "))
 
-	pctx.StaticVariable("Arm64ClangCortexA76Cflags",
-		strings.Join(arm64ClangCpuVariantCflags["cortex-a76"], " "))
-
 	pctx.StaticVariable("Arm64ClangKryoCflags",
 		strings.Join(arm64ClangCpuVariantCflags["kryo"], " "))
 	pctx.StaticVariable("Arm64ClangKryo385Cflags",
@@ -148,7 +145,7 @@ var (
 		"cortex-a72": "${config.Arm64ClangCortexA53Cflags}",
 		"cortex-a73": "${config.Arm64ClangCortexA53Cflags}",
 		"cortex-a75": "${config.Arm64ClangCortexA55Cflags}",
-		"cortex-a76": "${config.Arm64ClangCortexA76Cflags}",
+		"cortex-a76": "${config.Arm64ClangCortexA55Cflags}",
 		"kryo":       "${config.Arm64ClangKryoCflags}",
 		"kryo385":    "${config.Arm64ClangKryo385Cflags}",
 		"exynos-m1":  "${config.Arm64ClangExynosM1Cflags}",
